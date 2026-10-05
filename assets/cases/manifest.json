@@ -1,3 +1,10 @@
 {
-  "_note": "Case id -> image files (paths relative to this folder). Case ids are listed in js/cases.js. See README.md here."
+  "_note": "Case id -> image files (paths relative to this folder). Case ids are listed in js/cases.js. See README.md here.",
+  "harney-v-sony": {
+    "a": "harney-v-sony/a.jpg",
+    "b": "harney-v-sony/b.jpg",
+    "aLabel": "Donald Harney, photo of Clark and Reigh Rockefeller",
+    "bLabel": "Sony Pictures Television, staged recreation for the TV movie “Who Is Clark Rockefeller?”",
+    "source": "IP Teaching Resources, Georgetown Law (harney.ppt)"
+  }
 }

@@ -79,6 +79,7 @@ const state = {
   downloads: {},
   view: 'swipe',
   viewChosen: false,
+  whereLens: 'parts',
   openGroups: new Set(['neural', 'objects']),
   objectView: 'markup',
   objectHighlight: null,
@@ -169,6 +170,7 @@ function onWorkerMessage(e) {
     case 'visuals':
       state.visuals = m.visuals;
       renderSpectrum();
+      renderWhereCard();
       renderViewModes();
       renderVisual();
       renderObjects();
@@ -376,6 +378,7 @@ async function startScan() {
   renderCaseBanner();
   state.objectHighlight = null;
   renderObjects();
+  renderWhereCard();
   renderGroups();
   renderSpotlight();
   renderViewModes();
@@ -583,9 +586,9 @@ const SPOTLIGHT = [
     id: 'clip',
     title: 'CLIP (for contrast)',
     sub: 'semantic, not copy detection',
-    ticks: [0.85, 0.95],
+    ticks: [0.75, 0.95],
     zones: [
-      ['partial', 0.85, 0.95],
+      ['partial', 0.75, 0.95],
       ['match', 0.95, 1],
     ],
   },
@@ -678,7 +681,8 @@ function headline(results) {
   }
   const clip = has('clip') ? v('clip') : null;
   const dino = has('dino') ? v('dino') : null;
-  if ((clip !== null && clip >= 0.85) || (dino !== null && dino >= 0.6)) {
+  const share = state.visuals?.dino?.mutualShare;
+  if ((clip !== null && clip >= 0.75) || (dino !== null && dino >= 0.4) || (share !== undefined && share >= 0.1)) {
     return { tone: 'similar', title: 'Similar subject, not a copy', sub: 'Semantic models (CLIP / DINOv2) see related content, but the copy detectors do not flag it.' };
   }
   return { tone: 'none', title: 'No meaningful similarity', sub: 'The copy detectors, hashes and keypoints all treat these as different images.' };
@@ -749,9 +753,9 @@ function similarityLevel(R, V) {
   const clip = val('clip');
   const share = V?.dino?.mutualShare;
   const sem = [
-    dino !== null && dino >= 0.6 ? `DINOv2 ${dino.toFixed(2)}` : null,
-    clip !== null && clip >= 0.85 ? `CLIP ${clip.toFixed(2)}` : null,
-    share !== undefined && share >= 0.2 ? `${Math.round(share * 100)}% of patches find a counterpart` : null,
+    dino !== null && dino >= 0.4 ? `DINOv2 ${dino.toFixed(2)}` : null,
+    clip !== null && clip >= 0.75 ? `CLIP ${clip.toFixed(2)}` : null,
+    share !== undefined && share >= 0.1 ? `${Math.round(share * 100)}% of patches find a counterpart` : null,
   ].filter(Boolean);
   if (sem.length) return { id: 'subject', why: `${sem.join(', ')} — but the copy detectors stay below their thresholds` };
   return { id: 'none', why: 'no test found a meaningful resemblance' };
@@ -1068,6 +1072,72 @@ function drawParts(d, maxCssWidth, withHeat, withLines) {
     }
   }
   return p.canvas;
+}
+
+const WHERE_LENSES = [
+  { id: 'parts', label: 'Matching parts', short: 'Same-coloured dots mark parts of A and B that DINOv2 finds most alike (mutual best matches).' },
+  { id: 'evidence', label: 'Copy evidence', short: 'Where SSCD’s copy score comes from: the coloured regions add up to the score.' },
+  { id: 'heat', label: 'Heat map', short: 'How closely every region of each image has a counterpart in the other.' },
+];
+
+/** Compact "where" panel at the top of the Detection tab. */
+function renderWhereCard() {
+  const box = $('#whereCard');
+  if (!box) return;
+  box.innerHTML = '';
+  const v = state.visuals;
+  box.append(el('div', { class: 'where-head' }, el('h3', {}, 'Where the similarity comes from'), el('button', { type: 'button', class: 'linklike', onclick: () => $('#whereBtn').click() }, 'More views →')));
+  if (!v || !(v.dino || v.sscd)) {
+    box.append(
+      el(
+        'p',
+        { class: 'muted small' },
+        state.scanning
+          ? 'Annotated views appear here when the scan finishes.'
+          : 'Turn on the DINOv2 or SSCD models in Settings to see where the similarity comes from.',
+      ),
+    );
+    return;
+  }
+  const lenses = WHERE_LENSES.filter((l) => (l.id === 'evidence' ? v.sscd : v.dino));
+  if (!lenses.some((l) => l.id === state.whereLens)) state.whereLens = lenses[0].id;
+  const lens = lenses.find((l) => l.id === state.whereLens);
+  box.append(
+    el(
+      'div',
+      { class: 'lens-pills' },
+      lenses.map((l) =>
+        el(
+          'button',
+          {
+            type: 'button',
+            class: 'pill',
+            'aria-pressed': String(l.id === state.whereLens),
+            onclick: () => {
+              state.whereLens = l.id;
+              renderWhereCard();
+            },
+          },
+          l.label,
+        ),
+      ),
+    ),
+  );
+  const width = Math.max(320, box.clientWidth - 36);
+  let canvas;
+  let note = lens.short;
+  if (lens.id === 'parts') {
+    canvas = drawParts(v.dino, width, false, false);
+    note += ` ${Math.round(v.dino.mutualShare * 100)}% of A’s patches have a mutual match in B.`;
+  } else if (lens.id === 'heat') {
+    canvas = drawHeatPair(v.dino.a, v.dino.b, dinoV, 1, width);
+  } else {
+    const e = v.sscd;
+    const peak = (grid) => Math.max(1e-9, ...grid.values);
+    canvas = drawHeatPair(e.a, e.b, { a: (x) => x / peak(e.a), b: (x) => x / peak(e.b) }, Math.max(0.15, Math.min(1, (e.score - 0.15) / 0.45)), width);
+    note += ` Score ${e.score.toFixed(3)}${e.score < 0.5 ? ' — faint, because SSCD finds little copy evidence.' : '.'}`;
+  }
+  box.append(el('div', { class: 'lens-view' }, canvas), el('p', { class: 'where-note' }, note));
 }
 
 function drawHeatPair(left, right, toV, strength, maxCssWidth) {
@@ -1886,7 +1956,7 @@ function renderCaseBanner() {
   if (!c) return;
   const imgs = state.caseImages[c.id] || {};
   const labels = imgs.aLabel || imgs.bLabel ? el('p', { class: 'case-banner-labels' }, el('b', {}, 'A '), imgs.aLabel || 'plaintiff’s work', el('b', {}, ' · B '), imgs.bLabel || 'defendant’s work') : null;
-  box.append(
+  const parts = [
     el(
       'div',
       { class: 'case-banner-top' },
@@ -1901,7 +1971,8 @@ function renderCaseBanner() {
       { class: 'muted small' },
       'Do the tests below line up with the court? Similarity scores measure resemblance between pixels or learned features; what counts as protectable expression, how much was taken and whether the use was fair are questions they do not measure.',
     ),
-  );
+  ];
+  box.append(...parts.filter(Boolean));
 }
 
 // ------------------------------------------------------------------ catalogue
@@ -2019,6 +2090,7 @@ function init() {
     resizeTimer = setTimeout(() => {
       if (!$('#tab-visual').hidden) renderVisual();
       if (!$('#tab-objects').hidden) renderObjects();
+      if (!$('#tab-detection').hidden) renderWhereCard();
     }, 200);
   });
   refreshDownloadNote();

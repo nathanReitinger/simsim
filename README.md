@@ -9,7 +9,9 @@ as similar, with an explanation of every test.
 Everything runs in the browser (WebAssembly). Images are never uploaded, so the site can be hosted as static
 files on GitHub Pages.
 
-Built for teaching computer science & law (copyright, memorisation in generative models, content matching).
+Written by [Nathan Reitinger](https://www.law.northwestern.edu/faculty/profiles/nathanreitinger/) for teaching
+computer science & law (copyright, memorisation in generative models, content matching). Corrections and pull
+requests welcome.
 
 ## What it runs
 

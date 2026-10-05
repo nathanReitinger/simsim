@@ -1766,6 +1766,35 @@ details.group[open] .group-head {
   margin-top: 6px;
 }
 
+/* ------------------------------------------------------------ where card */
+
+.where {
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+
+.where-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.where-head h3 {
+  font-size: 15.5px;
+}
+
+.where .lens-pills {
+  margin-bottom: 10px;
+}
+
+.where-note {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 /* ------------------------------------------------------------ lenses & spectrum */
 
 .viewmodes {
@@ -2296,6 +2325,26 @@ details.group[open] .group-head {
 .footer p {
   max-width: 900px;
   margin: 0 auto;
+}
+
+.footer-signoff {
+  max-width: 900px;
+  margin: 0 auto 10px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.footer-signoff strong {
+  color: var(--text);
+}
+
+.gh-link {
+  text-decoration: none;
+}
+
+.gh-link .gh-fill {
+  fill: currentColor;
+  stroke: none;
 }
 
 .toast {
