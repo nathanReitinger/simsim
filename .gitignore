@@ -1,0 +1,5 @@
+.DS_Store
+.claude/
+_testfiles/
+__pycache__/
+*.pyc

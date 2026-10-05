@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Image Similarity Scanner</title>
+    <meta
+      name="description"
+      content="Compare two images with 35 similarity tests — SSCD copy detection, perceptual hashes (PDQ, pHash), SSIM, keypoint matching, CLIP and more. Runs entirely in your browser."
+    />
+    <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="modulepreload" href="js/app.js" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="./" aria-label="Image Similarity Scanner home">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+            <rect x="3" y="7" width="16" height="16" rx="3.5" class="mark-a" />
+            <rect x="13" y="9" width="16" height="16" rx="3.5" class="mark-b" />
+            <path d="M6 16h20" class="mark-scan" />
+          </svg>
+          <span>Image Similarity Scanner</span>
+        </a>
+        <nav class="topnav">
+          <a href="#how">How it works</a>
+          <a href="#catalogue">The tests</a>
+          <button type="button" class="icon-btn" id="settingsBtn" aria-label="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9" /><circle cx="15" cy="7" r="2.2" /><circle cx="9" cy="17" r="2.2" /></svg>
+            <span>Settings</span>
+          </button>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" id="upload">
+        <h1>Are these two images the same?</h1>
+        <p class="lede">
+          Drop two images and run <strong>35 similarity tests</strong> side by side — from byte-level file hashes to Meta’s
+          SSCD copy detector. Everything runs in your browser; <strong>your images are never uploaded</strong>.
+        </p>
+
+        <div class="drops">
+          <div class="drop" data-slot="a" tabindex="0" role="button" aria-label="Choose image A">
+            <input type="file" accept="image/*" hidden />
+            <div class="drop-empty">
+              <span class="drop-badge">A</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></svg>
+              <strong>Drop image A</strong>
+              <span>or click to browse · paste with ⌘/Ctrl+V</span>
+            </div>
+            <div class="drop-filled" hidden>
+              <span class="drop-badge">A</span>
+              <img alt="Image A preview" />
+              <div class="drop-meta"><span class="drop-name"></span><span class="drop-dims"></span></div>
+              <button type="button" class="drop-clear" aria-label="Remove image A">×</button>
+            </div>
+          </div>
+
+          <button type="button" class="swap" id="swapBtn" title="Swap A and B" aria-label="Swap images A and B">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h12m0 0-3.5-3.5M19 7l-3.5 3.5M17 17H5m0 0 3.5 3.5M5 17l3.5-3.5" /></svg>
+          </button>
+
+          <div class="drop" data-slot="b" tabindex="0" role="button" aria-label="Choose image B">
+            <input type="file" accept="image/*" hidden />
+            <div class="drop-empty">
+              <span class="drop-badge">B</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></svg>
+              <strong>Drop image B</strong>
+              <span>or <button type="button" class="linklike" id="labLink">make an edited copy of A</button></span>
+            </div>
+            <div class="drop-filled" hidden>
+              <span class="drop-badge">B</span>
+              <img alt="Image B preview" />
+              <div class="drop-meta"><span class="drop-name"></span><span class="drop-dims"></span></div>
+              <button type="button" class="drop-clear" aria-label="Remove image B">×</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn primary" id="scanBtn" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" /></svg>
+            Scan images
+          </button>
+          <button type="button" class="btn" id="labBtn" disabled>Edit a copy of A…</button>
+        </div>
+
+        <div class="samples">
+          <span class="samples-label">Try an example:</span>
+          <div class="samples-list" id="samples"></div>
+        </div>
+        <p class="download-note" id="downloadNote" hidden></p>
+      </section>
+
+      <section class="results" id="results" hidden aria-live="polite">
+        <div class="summary card">
+          <div class="gauge" id="gauge">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <circle class="gauge-track" cx="60" cy="60" r="52" />
+              <circle class="gauge-partial" cx="60" cy="60" r="52" />
+              <circle class="gauge-flag" cx="60" cy="60" r="52" />
+            </svg>
+            <div class="gauge-text">
+              <span class="gauge-num" id="gaugeNum">0</span>
+              <span class="gauge-den" id="gaugeDen">/ 35</span>
+            </div>
+          </div>
+          <div class="summary-body">
+            <div class="summary-kicker" id="summaryKicker">Scanning…</div>
+            <h2 class="summary-title" id="summaryTitle">Running tests</h2>
+            <p class="summary-sub" id="summarySub"></p>
+            <div class="summary-chips" id="summaryChips"></div>
+          </div>
+          <div class="summary-side">
+            <div class="progress" id="progress"><div class="progress-bar" id="progressBar"></div></div>
+            <div class="progress-text" id="progressText"></div>
+            <div class="summary-actions">
+              <button type="button" class="btn small" id="exportBtn" disabled>Download report (JSON)</button>
+              <button type="button" class="btn small" id="copyBtn" disabled>Copy summary</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" class="tab" aria-selected="true" data-tab="detection">Detection</button>
+          <button type="button" role="tab" class="tab" aria-selected="false" data-tab="visual">Visual comparison</button>
+          <button type="button" role="tab" class="tab" aria-selected="false" data-tab="details">Details</button>
+        </div>
+
+        <div class="tabpanel" id="tab-detection" role="tabpanel">
+          <div class="spotlight card" id="spotlight"></div>
+          <div class="legend">
+            <span><i class="dot identical"></i>Identical</span>
+            <span><i class="dot match"></i>Match</span>
+            <span><i class="dot partial"></i>Partial</span>
+            <span><i class="dot none"></i>No match</span>
+            <span><i class="dot na"></i>Not applicable / off</span>
+            <span class="legend-hint">Click any test for an explanation.</span>
+          </div>
+          <div id="groups"></div>
+        </div>
+
+        <div class="tabpanel" id="tab-visual" role="tabpanel" hidden>
+          <div class="viewmodes" id="viewModes"></div>
+          <div class="viewer card" id="viewer"></div>
+          <p class="viewer-caption" id="viewerCaption"></p>
+        </div>
+
+        <div class="tabpanel" id="tab-details" role="tabpanel" hidden>
+          <div class="card table-card"><table class="details" id="detailsTable"></table></div>
+        </div>
+      </section>
+
+      <section class="how" id="how">
+        <h2>How it works</h2>
+        <div class="how-grid">
+          <div class="how-card">
+            <h3>Many definitions of “the same”</h3>
+            <p>
+              A file hash asks whether two files are bit-for-bit identical. A perceptual hash asks whether they would look
+              identical at thumbnail size. SSIM asks whether the pixels line up. SSCD asks whether one is an edited copy of
+              the other. CLIP asks whether they depict the same kind of thing. Each test answers a different question — the
+              disagreements are the interesting part.
+            </p>
+          </div>
+          <div class="how-card">
+            <h3>Reading the score</h3>
+            <p>
+              Like a malware scanner, the headline counts how many tests flag the pair: <em>Identical</em> or
+              <em>Match</em> count as flags, <em>Partial</em> is shown separately. Thresholds come from the original papers
+              where they exist (SSCD, PDQ, Somepalli et al.) and are labelled as heuristics elsewhere.
+            </p>
+          </div>
+          <div class="how-card">
+            <h3>Similarity is not infringement</h3>
+            <p>
+              These numbers measure resemblance between pixels or learned features. Whether a resemblance is legally
+              significant — originality, protectable expression, substantial similarity, fair use — is a different question
+              that no metric answers. Treat the scores as evidence to interpret, not conclusions.
+            </p>
+          </div>
+          <div class="how-card">
+            <h3>Private by design</h3>
+            <p>
+              Images are decoded and analysed on your device with WebAssembly (ONNX Runtime, OpenCV). The neural models are
+              downloaded once (≈ 200 MB in total, configurable in Settings) and cached by your browser.
+            </p>
+          </div>
+        </div>
+        <div id="catalogue" class="catalogue"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>
+        Built for teaching computer science &amp; law. Models: SSCD (Meta AI, MIT), DINOv2 (Meta AI, Apache-2.0), CLIP
+        (OpenAI, MIT), LPIPS (BSD-2). Libraries: ONNX Runtime Web (MIT), OpenCV.js (Apache-2.0), exifr (MIT). Sample photos:
+        NASA, SpaceX (public domain), Stefan van der Walt and Rachel Michetti (CC0), via scikit-image.
+      </p>
+    </footer>
+
+    <dialog class="dialog" id="settingsDialog">
+      <form method="dialog" class="dialog-inner">
+        <header class="dialog-head">
+          <h2>Settings</h2>
+          <button class="icon-btn" value="close" aria-label="Close settings">×</button>
+        </header>
+        <p class="muted">
+          Neural tests need model files. Each is downloaded the first time it is used and then cached by your browser.
+          Turn off the large ones on slow connections.
+        </p>
+        <div class="model-list" id="modelList"></div>
+        <div class="dialog-foot">
+          <button type="button" class="btn small" id="clearCacheBtn">Delete downloaded models</button>
+          <button class="btn primary small" value="close">Done</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="dialog lab" id="labDialog">
+      <form method="dialog" class="dialog-inner">
+        <header class="dialog-head">
+          <h2>Edit a copy of image A</h2>
+          <button class="icon-btn" value="close" aria-label="Close editor">×</button>
+        </header>
+        <div class="lab-body">
+          <div class="lab-preview">
+            <img id="labPreview" alt="Preview of the edited copy" />
+            <p class="muted small" id="labCaption"></p>
+          </div>
+          <div class="lab-controls" id="labControls">
+            <div class="lab-presets" id="labPresets"></div>
+          </div>
+        </div>
+        <div class="dialog-foot">
+          <button type="button" class="btn small" id="labReset">Reset</button>
+          <button type="button" class="btn primary small" id="labUse">Use as image B</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
