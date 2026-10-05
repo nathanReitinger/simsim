@@ -3,6 +3,7 @@ import { MODELS } from './lib/neural.js';
 import { ModelStore } from './lib/modelstore.js';
 import { applyTransform, DEFAULTS, PRESETS, describe } from './transform.js';
 import { CASES, CASE_GROUPS } from './cases.js';
+import { lutColor } from './lib/colormap.js';
 
 const ROOT = new URL('../', import.meta.url);
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -167,6 +168,7 @@ function onWorkerMessage(e) {
       break;
     case 'visuals':
       state.visuals = m.visuals;
+      renderSpectrum();
       renderViewModes();
       renderVisual();
       renderObjects();
@@ -682,6 +684,117 @@ function headline(results) {
   return { tone: 'none', title: 'No meaningful similarity', sub: 'The copy detectors, hashes and keypoints all treat these as different images.' };
 }
 
+// The similarity spectrum: seven increasingly loose meanings of "the same".
+const LEVELS = [
+  {
+    id: 'file',
+    label: 'Same file',
+    tests: 'SHA-256, SHA-1, MD5',
+    means: 'A byte-for-byte duplicate: the file itself was copied.',
+  },
+  {
+    id: 'pixels',
+    label: 'Same pixels',
+    tests: 'Pixel-exact match',
+    means: 'The same image saved as a different file (new metadata or a lossless format).',
+  },
+  {
+    id: 'resaved',
+    label: 'Re-saved',
+    tests: 'PDQ, pHash, dHash, SSIM, PSNR',
+    means: 'The same image after compression or resizing — still a reproduction of the whole work.',
+  },
+  {
+    id: 'edited',
+    label: 'Edited copy',
+    tests: 'SSCD ≥ 0.75, PDQ + rotations, keypoints',
+    means: 'A reproduction with changes such as filters, captions or crops. The question shifts to what the changes add — derivative work, parody, fair use.',
+  },
+  {
+    id: 'part',
+    label: 'Shared part',
+    tests: 'Crop search, keypoints, SSCD 0.5–0.75, objects',
+    means: 'Part of one image appears in the other. Courts then ask whether that part is protected expression, and whether it is a substantial part.',
+  },
+  {
+    id: 'subject',
+    label: 'Similar subject',
+    tests: 'DINOv2, CLIP, matching parts',
+    means: 'The same kind of subject, pose, composition or style without copied pixels. Ideas, subjects and styles are not protected on their own, although an original selection and arrangement can be.',
+  },
+  {
+    id: 'none',
+    label: 'Unrelated',
+    tests: 'every test below its threshold',
+    means: 'As far as these tests can tell, these are different works.',
+  },
+];
+
+function similarityLevel(R, V) {
+  const val = (id) => (typeof R[id]?.value === 'number' && COUNTED.has(R[id].verdict) ? R[id].value : null);
+  const is = (id, ...vs) => vs.includes(R[id]?.verdict);
+  const sscd = val('sscd');
+  if (is('sha256', 'identical')) return { id: 'file', why: 'the SHA-256 digests are identical' };
+  if (is('pixels', 'identical')) return { id: 'pixels', why: 'every decoded pixel is identical' };
+  if ((is('pdq', 'match') || (is('phash', 'match') && is('dhash', 'match'))) && (is('msssim', 'match') || is('ssim', 'match'))) {
+    return { id: 'resaved', why: 'the perceptual hashes match and the pixels line up' };
+  }
+  if (sscd !== null && sscd >= 0.75) return { id: 'edited', why: `SSCD scores ${sscd.toFixed(2)}, above the 0.75 copy threshold` };
+  if (is('pdqDihedral', 'match')) return { id: 'edited', why: 'PDQ matches once B is rotated or mirrored' };
+  if (is('crop', 'identical', 'match')) return { id: 'part', why: 'one image appears inside the other' };
+  if (sscd !== null && sscd >= 0.5) return { id: 'part', why: `SSCD scores ${sscd.toFixed(2)}, the range Somepalli et al. associate with partial copies` };
+  const kp = ['orb', 'akaze', 'brisk'].filter((id) => is(id, 'match'));
+  if (kp.length) return { id: 'part', why: `${kp.map((k) => k.toUpperCase()).join(', ')} keypoints match in one consistent geometry` };
+  const dino = val('dino');
+  const clip = val('clip');
+  const share = V?.dino?.mutualShare;
+  const sem = [
+    dino !== null && dino >= 0.6 ? `DINOv2 ${dino.toFixed(2)}` : null,
+    clip !== null && clip >= 0.85 ? `CLIP ${clip.toFixed(2)}` : null,
+    share !== undefined && share >= 0.2 ? `${Math.round(share * 100)}% of patches find a counterpart` : null,
+  ].filter(Boolean);
+  if (sem.length) return { id: 'subject', why: `${sem.join(', ')} — but the copy detectors stay below their thresholds` };
+  return { id: 'none', why: 'no test found a meaningful resemblance' };
+}
+
+function renderSpectrum() {
+  const box = $('#spectrum');
+  if (!box) return;
+  const done = !state.scanning && Object.keys(state.results).length > 0;
+  box.hidden = !done;
+  if (!done) return;
+  const level = similarityLevel(state.results, state.visuals);
+  const info = LEVELS.find((l) => l.id === level.id);
+  box.innerHTML = '';
+  box.append(
+    el('div', { class: 'spectrum-label' }, 'Where this pair sits on the similarity spectrum'),
+    el(
+      'ol',
+      { class: 'spectrum-steps' },
+      LEVELS.map((l) => el('li', { class: l.id === level.id ? 'active' : '', title: `${l.label}: detected by ${l.tests}` }, l.label)),
+    ),
+    el('p', { class: 'spectrum-means' }, el('b', {}, `${info.label}: `), `${level.why}. `, info.means),
+  );
+}
+
+function renderSpectrumGuide() {
+  const box = $('#spectrumGuide');
+  if (!box) return;
+  box.append(
+    el('h3', {}, 'Seven meanings of “similar”'),
+    el(
+      'p',
+      { class: 'muted' },
+      'From most to least literal. Each scan places the pair on this scale using the most specific level that its tests support.',
+    ),
+    el(
+      'ol',
+      { class: 'guide-steps' },
+      LEVELS.map((l) => el('li', {}, el('strong', {}, l.label), el('span', { class: 'guide-tests' }, l.tests), el('p', {}, l.means))),
+    ),
+  );
+}
+
 const KEY_CHIPS = ['sscd', 'sscdLarge', 'pdq', 'phash', 'ssim', 'orb', 'clip'];
 
 function updateSummary() {
@@ -727,6 +840,7 @@ function updateSummary() {
     $('#summaryTitle').textContent = 'Running tests…';
     $('#summarySub').textContent = '';
   }
+  renderSpectrum();
   const chips = $('#summaryChips');
   chips.innerHTML = '';
   for (const id of KEY_CHIPS) {
@@ -750,42 +864,217 @@ function renderDownloadStatus() {
 
 // ------------------------------------------------------------------ visual comparison
 
-const VIEWS = [
-  { id: 'swipe', label: 'Swipe', need: (v) => v.pairA },
-  { id: 'side', label: 'Side by side', need: () => true },
-  { id: 'blink', label: 'Blink', need: (v) => v.pairA },
-  { id: 'deltaE', label: 'Colour difference', need: (v) => v.deltaE },
-  { id: 'ssim', label: 'SSIM map', need: (v) => v.ssim },
-  { id: 'matches', label: 'Keypoint matches', need: (v) => v.matches },
-  { id: 'aligned', label: 'Aligned overlay', need: (v) => v.aligned },
+// Lenses for the "Where it's similar" tab, grouped by the question they answer.
+const LENS_GROUPS = [
+  {
+    title: 'Same content?',
+    note: 'Learned features. They survive crops, flips and redrawing — and also respond to mere resemblance.',
+    ids: ['parts', 'heat', 'evidence'],
+  },
+  {
+    title: 'Same details?',
+    note: 'Distinctive local patterns in one consistent geometry: strong evidence that one image was made from the other.',
+    ids: ['matches', 'aligned'],
+  },
+  {
+    title: 'Same pixels?',
+    note: 'Location-by-location comparison after stretching B onto A. Only meaningful when the images line up.',
+    ids: ['deltaE', 'ssim', 'swipe', 'blink', 'side'],
+  },
 ];
+
+const VIEWS = {
+  parts: {
+    label: 'Matching parts',
+    need: (v) => v.dino,
+    what: 'DINOv2 (Meta AI) describes every 14×14-pixel patch of each image with a feature vector. Each patch of A is matched to the patch of B it most resembles, keeping only pairs that choose each other (mutual nearest neighbours). A dot of the same colour marks the two halves of each match; the colour comes from the dot’s position in A.',
+    means: 'Matches that land on the same figures, objects or arrangement show which elements the two works share — the “what was taken?” question. They also connect things that are merely the same kind of thing (two different cats match eye to eye), so shared subject matter shows up here too; on its own that is not evidence of copied expression.',
+    ref: { label: 'Amir et al., Deep ViT Features as Dense Visual Descriptors (2021)', url: 'https://arxiv.org/abs/2112.05814' },
+  },
+  heat: {
+    label: 'Similarity heat map',
+    need: (v) => v.dino,
+    what: 'Each patch is coloured by how close its best match in the other image is: bright means something very similar exists in the other image, uncoloured means nothing like it does.',
+    means: 'For a crop, the copied area lights up and the rest stays clear; for an edited copy, the edits show up as gaps. Plain textures such as sky or walls can light up even in unrelated photos.',
+    ref: { label: 'Oquab et al., DINOv2 (2023)', url: 'https://arxiv.org/abs/2304.07193' },
+  },
+  evidence: {
+    label: 'Copy evidence (SSCD)',
+    need: (v) => v.sscd,
+    what: 'SSCD’s copy score is one number, but it can be split exactly into contributions from each region of the image (plus a constant close to zero). This map shows that split: bright regions supplied the evidence for the score. The overlay fades when the score itself is low.',
+    means: 'This is what the copy detector “looked at”. Evidence on the subject means SSCD is matching the reproduced content; evidence on a watermark, caption or border means the score may reflect that shared element more than the work itself.',
+    ref: { label: 'Stylianou, Souvenir & Pless, Visualizing Deep Similarity Networks (2019)', url: 'https://arxiv.org/abs/1901.00536' },
+  },
+  matches: {
+    label: 'Keypoint matches',
+    need: (v) => v.matches,
+    what: 'Distinctive corners and blobs found in both images, joined when their descriptors match and when one geometric transform (a homography) explains them all.',
+    means: 'A large, geometrically consistent set of identical details is hard to produce by coincidence: it suggests one image was made from the other, or both from the same source — even after cropping, scaling or rotation.',
+  },
+  aligned: {
+    label: 'Aligned overlay',
+    need: (v) => v.aligned,
+    what: 'B warped onto A with the keypoint transform. Fade between them, or show what still differs.',
+    means: 'Once a crop, resize or rotation is undone, whatever still differs is the actual edit.',
+  },
+  deltaE: {
+    label: 'Colour difference',
+    need: (v) => v.deltaE,
+    what: 'Perceptual colour difference (CIEDE2000) at every pixel after stretching B to A’s size; bright means a large change (ΔE ≥ 25).',
+    means: 'Shows exactly which pixels changed — but only when the images line up. A crop or flip makes everything look “different”.',
+  },
+  ssim: {
+    label: 'SSIM map',
+    need: (v) => v.ssim,
+    what: 'Local structural similarity (SSIM) in small windows; bright where brightness, contrast or structure differ.',
+    means: 'Pixel-level metrics are how compression and image-quality research define “the same image”; they ignore meaning entirely.',
+  },
+  swipe: { label: 'Swipe', need: (v) => v.pairA, what: 'Drag across to wipe between A and B (B resized to A’s dimensions).', means: '' },
+  blink: { label: 'Blink', need: (v) => v.pairA, what: 'Flicker between A and B; differences jump out as motion.', means: '' },
+  side: { label: 'Side by side', need: () => true, what: 'The original files, scaled to fit.', means: '' },
+};
 
 function renderViewModes() {
   const box = $('#viewModes');
   box.innerHTML = '';
   const v = state.visuals || {};
-  const available = VIEWS.filter((m) => (m.id === 'side' ? state.slots.a && state.slots.b : m.need(v)));
-  if (!state.viewChosen && available.some((m) => m.id === 'swipe')) state.view = 'swipe';
-  if (!available.some((m) => m.id === state.view)) state.view = available[0]?.id || 'side';
-  for (const m of available) {
+  const ok = (id) => (id === 'side' ? !!(state.slots.a && state.slots.b) : !!VIEWS[id].need(v));
+  const available = Object.keys(VIEWS).filter(ok);
+  if (!state.viewChosen) state.view = ['parts', 'evidence', 'swipe'].find((id) => available.includes(id)) || 'side';
+  if (!available.includes(state.view)) state.view = available[0] || 'side';
+  for (const g of LENS_GROUPS) {
+    const ids = g.ids.filter(ok);
+    if (!ids.length) continue;
     box.append(
       el(
-        'button',
-        {
-          type: 'button',
-          class: 'pill',
-          'aria-pressed': String(m.id === state.view),
-          onclick: () => {
-            state.view = m.id;
-            state.viewChosen = true;
-            renderViewModes();
-            renderVisual();
-          },
-        },
-        m.label,
+        'div',
+        { class: 'lens-group' },
+        el('div', { class: 'lens-q' }, el('strong', {}, g.title), el('span', {}, g.note)),
+        el(
+          'div',
+          { class: 'lens-pills' },
+          ids.map((id) =>
+            el(
+              'button',
+              {
+                type: 'button',
+                class: 'pill',
+                'aria-pressed': String(id === state.view),
+                onclick: () => {
+                  state.view = id;
+                  state.viewChosen = true;
+                  renderViewModes();
+                  renderVisual();
+                },
+              },
+              VIEWS[id].label,
+            ),
+          ),
+        ),
       ),
     );
   }
+}
+
+function renderLensExplain() {
+  const box = $('#lensExplain');
+  const lens = VIEWS[state.view];
+  box.innerHTML = '';
+  box.hidden = !lens || !state.visuals;
+  if (box.hidden) return;
+  box.append(el('h4', {}, 'What you’re seeing'), el('p', {}, lens.what));
+  if (lens.means) box.append(el('h4', {}, 'What it means for copying'), el('p', {}, lens.means));
+  if (lens.ref) box.append(el('p', { class: 'small' }, 'Method: ', el('a', { href: lens.ref.url, target: '_blank', rel: 'noopener' }, lens.ref.label)));
+}
+
+/** Side-by-side canvas of the two original images at a common height. */
+function pairCanvas(maxCssWidth) {
+  const A = state.slots.a.bitmap;
+  const B = state.slots.b.bitmap;
+  const H = 560;
+  const wa = Math.round((A.width / A.height) * H);
+  const wb = Math.round((B.width / B.height) * H);
+  const gap = 36;
+  const canvas = el('canvas', { width: wa + gap + wb, height: H });
+  const g = canvas.getContext('2d');
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(A, 0, 0, wa, H);
+  g.drawImage(B, wa + gap, 0, wb, H);
+  canvas.style.width = `${Math.min(maxCssWidth, canvas.width)}px`;
+  return { canvas, g, ra: { x: 0, y: 0, w: wa, h: H }, rb: { x: wa + gap, y: 0, w: wb, h: H } };
+}
+
+/** Upsampled heat overlay of a gw × gh grid; `toV` maps a cell value to 0..1. */
+function heatOverlay(g, grid, rect, toV, strength = 1) {
+  const c = el('canvas', { width: grid.gw, height: grid.gh });
+  const gc = c.getContext('2d');
+  const id = gc.createImageData(grid.gw, grid.gh);
+  for (let i = 0; i < grid.gw * grid.gh; i++) {
+    const v = Math.max(0, Math.min(1, toV(grid.values[i])));
+    const [r, gg, b] = lutColor(0.25 + 0.75 * v);
+    id.data[i * 4] = r;
+    id.data[i * 4 + 1] = gg;
+    id.data[i * 4 + 2] = b;
+    id.data[i * 4 + 3] = Math.round(255 * strength * 0.62 * v);
+  }
+  gc.putImageData(id, 0, 0);
+  g.save();
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(c, rect.x, rect.y, rect.w, rect.h);
+  g.restore();
+}
+
+const cellCenter = (idx, grid, rect) => [rect.x + ((idx % grid.gw) + 0.5) * (rect.w / grid.gw), rect.y + (Math.floor(idx / grid.gw) + 0.5) * (rect.h / grid.gh)];
+const dinoV = (sim) => (sim - 0.35) / 0.5;
+
+function drawParts(d, maxCssWidth, withHeat, withLines) {
+  const p = pairCanvas(maxCssWidth);
+  if (withHeat) {
+    heatOverlay(p.g, d.a, p.ra, dinoV, 0.8);
+    heatOverlay(p.g, d.b, p.rb, dinoV, 0.8);
+  }
+  // Colour each matched pair by where it sits in A, so the same colour marks
+  // the same part in both images (as in dense-correspondence papers).
+  const cell = Math.min(p.ra.w / d.a.gw, p.ra.h / d.a.gh);
+  const r = Math.max(4, cell * 0.32);
+  const colour = (i) => {
+    const x = (i % d.a.gw) / Math.max(1, d.a.gw - 1);
+    const y = Math.floor(i / d.a.gw) / Math.max(1, d.a.gh - 1);
+    return `hsl(${Math.round(300 * x)}, 90%, ${Math.round(38 + 30 * y)}%)`;
+  };
+  const pts = d.lines.map(([i, j, sim]) => ({ a: cellCenter(i, d.a, p.ra), b: cellCenter(j, d.b, p.rb), c: colour(i), sim }));
+  if (withLines) {
+    p.g.lineWidth = Math.max(1, p.canvas.width / 1100);
+    for (const q of pts) {
+      p.g.strokeStyle = q.c;
+      p.g.globalAlpha = 0.25 + 0.5 * Math.max(0, Math.min(1, (q.sim - 0.5) / 0.45));
+      p.g.beginPath();
+      p.g.moveTo(...q.a);
+      p.g.lineTo(...q.b);
+      p.g.stroke();
+    }
+    p.g.globalAlpha = 1;
+  }
+  for (const q of pts) {
+    for (const [x, y] of [q.a, q.b]) {
+      p.g.beginPath();
+      p.g.arc(x, y, r, 0, Math.PI * 2);
+      p.g.fillStyle = q.c;
+      p.g.fill();
+      p.g.lineWidth = Math.max(1.5, r / 3);
+      p.g.strokeStyle = 'rgba(255,255,255,0.9)';
+      p.g.stroke();
+    }
+  }
+  return p.canvas;
+}
+
+function drawHeatPair(left, right, toV, strength, maxCssWidth) {
+  const p = pairCanvas(maxCssWidth);
+  heatOverlay(p.g, left, p.ra, toV.a || toV, strength);
+  heatOverlay(p.g, right, p.rb, toV.b || toV, strength);
+  return p.canvas;
 }
 
 function canvasFrom(img) {
@@ -804,6 +1093,7 @@ function renderVisual() {
   caption.textContent = '';
   const v = state.visuals;
   const { a, b } = state.slots;
+  renderLensExplain();
   if (state.view === 'side' || !v) {
     if (!a || !b) return;
     viewer.append(
@@ -814,10 +1104,55 @@ function renderVisual() {
         el('figure', {}, el('img', { src: b.url, alt: 'Image B' }), el('figcaption', {}, `B · ${b.w}×${b.h}`)),
       ),
     );
-    caption.textContent = v ? 'Original files, scaled to fit.' : 'More views appear when the scan finishes.';
+    caption.textContent = v ? '' : 'More views appear when the scan finishes.';
     return;
   }
   const displayWidth = Math.min(viewer.clientWidth - 32, Math.max(v.pairA.w, 640));
+  const fullWidth = viewer.clientWidth - 32;
+  const colorbar = (lo, hi) => el('div', { class: 'colorbar' }, lo, el('i'), hi);
+  if (state.view === 'parts') {
+    const holder = el('div');
+    const draw = () => {
+      holder.innerHTML = '';
+      holder.append(drawParts(v.dino, fullWidth, !!state.partsHeat, !!state.partsLines));
+    };
+    draw();
+    const toggle = (key, text) =>
+      el(
+        'label',
+        { class: 'ctl-check' },
+        el('input', {
+          type: 'checkbox',
+          checked: !!state[key],
+          onchange: (e) => {
+            state[key] = e.target.checked;
+            draw();
+          },
+        }),
+        text,
+      );
+    viewer.append(
+      el('div', { class: 'lens-view' }, holder, el('div', { class: 'viewer-controls' }, toggle('partsLines', 'connect matches with lines'), toggle('partsHeat', 'show the similarity heat map underneath'))),
+    );
+    caption.textContent = v.dino.lines.length
+      ? `Dots of the same colour mark matching parts: the ${v.dino.lines.length} strongest mutual matches, spread across the image. ${Math.round(v.dino.mutualShare * 100)}% of A’s patches have a mutual match in B with cosine ≥ 0.5 (unrelated photos: under 5%).`
+      : 'No patch pairs pass the cosine 0.5 bar: nothing in these images corresponds.';
+    return;
+  }
+  if (state.view === 'heat') {
+    viewer.append(el('div', { class: 'lens-view' }, drawHeatPair(v.dino.a, v.dino.b, dinoV, 1, fullWidth), colorbar('no counterpart', 'close match')));
+    caption.textContent = 'Colour shows each patch’s best-match cosine similarity in the other image, from 0.35 (no colour) to 0.85 and above (brightest).';
+    return;
+  }
+  if (state.view === 'evidence') {
+    const e = v.sscd;
+    const peak = (grid) => Math.max(1e-9, ...grid.values);
+    const toV = { a: (x) => x / peak(e.a), b: (x) => x / peak(e.b) };
+    const strength = Math.max(0.15, Math.min(1, (e.score - 0.15) / 0.45));
+    viewer.append(el('div', { class: 'lens-view' }, drawHeatPair(e.a, e.b, toV, strength, fullWidth), colorbar('no evidence', 'most evidence')));
+    caption.textContent = `SSCD score ${e.score.toFixed(3)}: each map’s cells add up to this score (positive contributions in colour, on a ${e.a.gw}×${e.a.gh} and ${e.b.gw}×${e.b.gh} grid).${e.score < 0.5 ? ' The overlay is faint because SSCD finds little copy evidence overall.' : ''}`;
+    return;
+  }
   if (state.view === 'swipe') {
     const base = canvasFrom(v.pairB);
     const top = canvasFrom(v.pairA);
@@ -839,7 +1174,7 @@ function renderVisual() {
     });
     box.addEventListener('pointerup', () => (box.onpointermove = null));
     viewer.append(box);
-    caption.textContent = 'Drag across the image. B is resized to A’s dimensions, exactly as the pixel and structural tests see it.';
+    caption.textContent = '';
   } else if (state.view === 'blink') {
     const ca = canvasFrom(v.pairA);
     const cb = canvasFrom(v.pairB);
@@ -853,15 +1188,12 @@ function renderVisual() {
       label.textContent = showA ? 'A' : 'B';
     }, 700);
     viewer.append(box);
-    caption.textContent = 'Flicker comparison: differences jump out as motion.';
+    caption.textContent = '';
   } else if (state.view === 'deltaE' || state.view === 'ssim') {
     const c = canvasFrom(v[state.view]);
     c.style.width = `${displayWidth}px`;
     viewer.append(el('div', {}, c, el('div', { class: 'colorbar' }, 'similar', el('i'), 'different')));
-    caption.textContent =
-      state.view === 'deltaE'
-        ? 'Perceptual colour difference (CIEDE2000) at each pixel; bright = large change (ΔE ≥ 25).'
-        : 'Local SSIM: bright areas are where luminance, contrast or structure differ.';
+    caption.textContent = '';
   } else if (state.view === 'matches') {
     viewer.append(drawMatches(v.matches, displayWidth));
     caption.textContent = `${v.matches.kind} keypoints: each line joins a feature in A to its match in B. Lines are RANSAC inliers (${v.matches.inliers} total)${v.matches.sane ? ', consistent with a single geometric transform' : ' — but no plausible single transform, so likely coincidental'}.`;
@@ -1653,6 +1985,7 @@ function init() {
   setupTabs();
   buildLab();
   renderCatalogue();
+  renderSpectrumGuide();
   renderCases();
   loadCaseManifest();
   for (const s of SAMPLES) $('#samples').append(el('button', { type: 'button', class: 'pill', onclick: () => loadSample(s) }, s.label));
@@ -1661,6 +1994,10 @@ function init() {
   $('#labLink').addEventListener('click', (e) => {
     e.stopPropagation();
     openLab();
+  });
+  $('#whereBtn').addEventListener('click', () => {
+    $('.tab[data-tab="visual"]').click();
+    $('.tabs').scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
   $('#expandAll').addEventListener('click', () => setAllGroups(true));
   $('#collapseAll').addEventListener('click', () => setAllGroups(false));

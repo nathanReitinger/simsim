@@ -29,8 +29,29 @@ papers where they exist — SSCD ≥ 0.75 (90% precision on DISC2021, per the SS
 replication (Somepalli et al., CVPR 2023 / NeurIPS 2023), PDQ ≤ 31 bits (Meta) — and are labelled as heuristics
 elsewhere. All thresholds live in [`js/engines.js`](js/engines.js).
 
-Other features: a spotlight panel with SSCD on its published threshold scale (CLIP alongside for contrast),
-visual comparisons (swipe, blink, colour-difference and SSIM heat maps, keypoint-match lines, aligned overlay),
+## Seeing where images are similar
+
+The **Where it’s similar** tab shows *where* the resemblance is, grouped by the question each view answers:
+
+- **Same content?**
+  - *Matching parts* — dense patch correspondences from DINOv2 features (mutual nearest neighbours, as in
+    Amir et al., “Deep ViT Features as Dense Visual Descriptors”, 2021). Matched patches are marked with dots of
+    the same colour in both images.
+  - *Similarity heat map* — for every patch, how close its best match in the other image is.
+  - *Copy evidence (SSCD)* — SSCD’s score split exactly into per-region contributions. The model pools with GeM,
+    which can be written as a sum over locations, so the cosine similarity decomposes into a map whose cells add
+    up to the score (following Stylianou, Souvenir & Pless, “Visualizing Deep Similarity Networks”, WACV 2019).
+    The export that adds this output is `tools/export_sscd.py --explain`.
+- **Same details?** — keypoint matches and an aligned overlay.
+- **Same pixels?** — colour-difference and SSIM maps, swipe, blink, side by side.
+
+Every view comes with a “what you’re seeing / what it means for copying” note. The results summary also places
+each pair on a **similarity spectrum** — same file → same pixels → re-saved → edited copy → shared part →
+similar subject → unrelated — and the How it works section explains the seven levels and which tests detect them.
+
+## Other features
+
+A spotlight panel with SSCD on its published threshold scale (CLIP alongside for contrast),
 a details table (formats, digests, perceptual hashes, EXIF), a JSON report, built-in public-domain examples, and
 a **Transform lab** that makes an edited copy of image A (crop, rotate, mirror, recolour, blur, noise, caption,
 JPEG quality) to explore which tests survive which edits.

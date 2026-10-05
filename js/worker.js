@@ -458,6 +458,23 @@ async function compareObjects(c) {
   };
 }
 
+/** Strongest mutual matches, thinned so neighbouring patches don't all draw lines. */
+function spreadLines(mutual, gw, minSim = 0.5, max = 90) {
+  const picked = [];
+  const taken = new Set();
+  for (const [i, j, sim] of [...mutual].filter((m) => m[2] >= minSim).sort((x, y) => y[2] - x[2])) {
+    const x = i % gw;
+    const y = Math.floor(i / gw);
+    let near = false;
+    for (let dy = -1; dy <= 1 && !near; dy++) for (let dx = -1; dx <= 1; dx++) if (taken.has(`${x + dx},${y + dy}`)) near = true;
+    if (near) continue;
+    taken.add(`${x},${y}`);
+    picked.push([i, j, sim]);
+    if (picked.length >= max) break;
+  }
+  return picked;
+}
+
 const RUN = {
   sha256: async (c) => exact(await sha('SHA-256', c.a.bytes), await sha('SHA-256', c.b.bytes)),
   sha1: async (c) => exact(await sha('SHA-1', c.a.bytes), await sha('SHA-1', c.b.bytes)),
@@ -657,9 +674,37 @@ const RUN = {
   },
 
   objects: (c) => compareObjects(c),
-  sscd: (c) => embedCompare(c, 'sscd'),
+  async sscd(c) {
+    // SSCD with per-region evidence: the cells of each map add up to the score.
+    const [ort, s] = await Promise.all([loadOrt(), session('sscd')]);
+    const A = await N.sscdWithContrib(ort, s, c.a.work);
+    const B = await N.sscdWithContrib(ort, s, c.b.work);
+    const value = N.cosine(A.e, B.e);
+    c.visuals.sscd = {
+      score: value,
+      a: { gw: A.fw, gh: A.fh, values: N.sscdEvidence(A, B.e) },
+      b: { gw: B.fw, gh: B.fh, values: N.sscdEvidence(B, A.e) },
+    };
+    return { value };
+  },
   sscdLarge: (c) => embedCompare(c, 'sscdLarge'),
-  dino: (c) => embedCompare(c, 'dino'),
+  async dino(c) {
+    const r = await embedCompare(c, 'dino');
+    // Dense patch correspondences (Amir et al. 2021): where the images match.
+    const [ort, s] = await Promise.all([loadOrt(), session('dino')]);
+    const pa = await N.dinoPatches(ort, s, c.a.work);
+    const pb = await N.dinoPatches(ort, s, c.b.work);
+    const corr = N.patchCorrespondence(pa, pb);
+    const share = corr.mutual.filter(([, , sim]) => sim >= 0.5).length / (pa.gw * pa.gh);
+    c.visuals.dino = {
+      a: { gw: pa.gw, gh: pa.gh, values: corr.bestA },
+      b: { gw: pb.gw, gh: pb.gh, values: corr.bestB },
+      lines: spreadLines(corr.mutual, pa.gw),
+      mutualShare: share,
+    };
+    r.detail = { 'patches of A with a mutual match in B (cos ≥ 0.5)': `${Math.round(share * 100)}%` };
+    return r;
+  },
   clip: (c) => embedCompare(c, 'clip'),
   async lpips(c) {
     const [ort, s] = await Promise.all([loadOrt(), session('lpips')]);

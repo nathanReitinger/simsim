@@ -22,6 +22,12 @@ for (let i = 0; i < 256; i++) {
   for (let c = 0; c < 3; c++) LUT[i * 3 + c] = Math.round(STOPS[k][c] * (1 - f) + STOPS[k + 1][c] * f);
 }
 
+/** Colour of a value in 0..1 as [r, g, b]. */
+export function lutColor(v) {
+  const j = Math.round(Math.max(0, Math.min(1, v)) * 255) * 3;
+  return [LUT[j], LUT[j + 1], LUT[j + 2]];
+}
+
 /** Values in 0..1 (clamped) -> RGBA buffer. Pixels where mask is 0 are dimmed. */
 export function heatmap(values, w, h, mask = null) {
   const out = new Uint8ClampedArray(w * h * 4);

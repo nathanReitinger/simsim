@@ -468,6 +468,12 @@ main {
   background: color-mix(in srgb, var(--accent) 88%, black);
 }
 
+.btn.primary-soft {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+}
+
 .btn.small {
   padding: 7px 12px;
   font-size: 13px;
@@ -1244,9 +1250,6 @@ details.group[open] .group-head {
 /* ------------------------------------------------------------ viewer */
 
 .viewmodes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
   margin-bottom: 12px;
 }
 
@@ -1763,6 +1766,180 @@ details.group[open] .group-head {
   margin-top: 6px;
 }
 
+/* ------------------------------------------------------------ lenses & spectrum */
+
+.viewmodes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lens-group {
+  display: grid;
+  grid-template-columns: minmax(180px, 300px) 1fr;
+  gap: 6px 16px;
+  align-items: center;
+}
+
+.lens-q strong {
+  display: block;
+  font-size: 14px;
+}
+
+.lens-q span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.lens-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lens-pills .pill[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.lens-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.lens-view canvas {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+.lens-explain {
+  padding: 14px 18px;
+  margin-top: 4px;
+}
+
+.lens-explain h4 {
+  margin: 8px 0 2px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.lens-explain h4:first-child {
+  margin-top: 0;
+}
+
+.lens-explain p {
+  margin: 0 0 4px;
+  font-size: 14px;
+  max-width: 900px;
+}
+
+.spectrum {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.spectrum-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.spectrum-steps {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.spectrum-steps li {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 4px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--faint);
+  border: 1px solid var(--border);
+}
+
+.spectrum-steps li.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.spectrum-means {
+  margin: 10px 0 0;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.spectrum-means b {
+  color: var(--text);
+}
+
+.spectrum-guide {
+  margin-top: 16px;
+  padding: 18px 20px;
+}
+
+.spectrum-guide h3 {
+  font-size: 17px;
+}
+
+.spectrum-guide > p {
+  margin: 4px 0 12px;
+}
+
+.guide-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: lvl;
+}
+
+.guide-steps li {
+  counter-increment: lvl;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+
+.guide-steps li strong::before {
+  content: counter(lvl) '. ';
+  color: var(--accent);
+}
+
+.guide-tests {
+  display: block;
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.guide-steps p {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
 /* ------------------------------------------------------------ objects tab */
 
 .objects-card {
@@ -2226,6 +2403,14 @@ details.group[open] .group-head {
 
   .group-dots {
     display: none;
+  }
+
+  .lens-group {
+    grid-template-columns: 1fr;
+  }
+
+  .spectrum-steps {
+    grid-template-columns: repeat(4, 1fr);
   }
 
   .engine-more {

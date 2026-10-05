@@ -124,16 +124,18 @@
             <div class="progress" id="progress"><div class="progress-bar" id="progressBar"></div></div>
             <div class="progress-text" id="progressText"></div>
             <div class="summary-actions">
+              <button type="button" class="btn small primary-soft" id="whereBtn">See where they’re similar →</button>
               <button type="button" class="btn small" id="exportBtn" disabled>Download report (JSON)</button>
               <button type="button" class="btn small" id="copyBtn" disabled>Copy summary</button>
             </div>
           </div>
+          <div class="spectrum" id="spectrum" hidden></div>
         </div>
 
         <div class="tabs" role="tablist">
           <button type="button" role="tab" class="tab" aria-selected="true" data-tab="detection">Detection</button>
+          <button type="button" role="tab" class="tab" aria-selected="false" data-tab="visual">Where it’s similar</button>
           <button type="button" role="tab" class="tab" aria-selected="false" data-tab="objects">Objects</button>
-          <button type="button" role="tab" class="tab" aria-selected="false" data-tab="visual">Visual comparison</button>
           <button type="button" role="tab" class="tab" aria-selected="false" data-tab="details">Details</button>
         </div>
 
@@ -162,6 +164,7 @@
           <div class="viewmodes" id="viewModes"></div>
           <div class="viewer card" id="viewer"></div>
           <p class="viewer-caption" id="viewerCaption"></p>
+          <div class="lens-explain card" id="lensExplain" hidden></div>
         </div>
 
         <div class="tabpanel" id="tab-details" role="tabpanel" hidden>
@@ -215,6 +218,7 @@
             </p>
           </div>
         </div>
+        <div id="spectrumGuide" class="spectrum-guide card"></div>
         <div id="catalogue" class="catalogue"></div>
       </section>
     </main>
