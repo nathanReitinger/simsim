@@ -1,4 +1,4 @@
-"""Build the compressed CLIP and DINOv2 image encoders used by the site.
+"""Build the compressed CLIP, DINOv2 and D-FINE models used by the site.
 
 Starts from the full-precision ONNX exports published on Hugging Face
 (pinned revisions below), then applies weight-only int8 compression while
@@ -27,6 +27,12 @@ MODELS = {
         "https://huggingface.co/onnx-community/dinov2-small/resolve/"
         "8b1f705a3a7f6f062f6bdd21986c1583d3ef105d/onnx/model.onnx",
         r"patch_embeddings|/layer\.0/",
+    ),
+    # ustc-community/dfine-medium-obj365 (D-FINE, Apache-2.0), exported by onnx-community
+    "dfine_m_obj365.onnx": (
+        "https://huggingface.co/onnx-community/dfine_m_obj365-ONNX/resolve/"
+        "f78e69849ffb6dfacbc648b61a11b3af83a06204/onnx/model.onnx",
+        None,
     ),
 }
 

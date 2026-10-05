@@ -43,6 +43,11 @@ export const MODELS = {
     files: ['models/lpips_alex.onnx'],
     bytes: 2501705,
   },
+  dfine: {
+    label: 'D-FINE-M object detector (Objects365)',
+    files: ['models/dfine_m_obj365.onnx'],
+    bytes: 20900541,
+  },
 };
 
 /** torchvision CenterCrop (offsets use Python's round-half-even). */

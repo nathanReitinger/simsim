@@ -127,6 +127,31 @@ export function templateSearch(cv, big, small) {
 }
 
 /**
+ * Warp an RGB image { w, h, rgb } into a w×h frame with homography H.
+ * Returns the warped image and a mask of pixels that came from the source.
+ */
+export function warpRgbInto(cv, img, H, w, h) {
+  const del = [];
+  const keep = (o) => (del.push(o), o);
+  try {
+    const src = keep(new cv.Mat(img.h, img.w, cv.CV_8UC3));
+    src.data.set(img.rgb);
+    const Hm = keep(cv.matFromArray(3, 3, cv.CV_64F, H));
+    const dsize = new cv.Size(w, h);
+    const dst = keep(new cv.Mat());
+    cv.warpPerspective(src, dst, Hm, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 0));
+    const ones = keep(new cv.Mat(img.h, img.w, cv.CV_8UC1, new cv.Scalar(255)));
+    const mask = keep(new cv.Mat());
+    cv.warpPerspective(ones, mask, Hm, dsize, cv.INTER_NEAREST, cv.BORDER_CONSTANT, new cv.Scalar(0));
+    const k = keep(cv.Mat.ones(3, 3, cv.CV_8U));
+    cv.erode(mask, mask, k);
+    return { img: { w, h, rgb: new Uint8Array(dst.data) }, mask: new Uint8Array(mask.data) };
+  } finally {
+    for (const o of del) o.delete();
+  }
+}
+
+/**
  * Warp image B (gray) into the frame of A using homography H (B -> A coords).
  * Returns the warped plane and a validity mask eroded by `erode` pixels.
  */

@@ -9,6 +9,7 @@ import * as Q from './lib/iqa.js';
 import * as G from './lib/histogram.js';
 import * as F from './lib/features.js';
 import * as N from './lib/neural.js';
+import * as O from './lib/objects.js';
 import { grayToRgba, heatmap, rgbToRgba } from './lib/colormap.js';
 import exifr from '../vendor/exifr/exifr.full.esm.js';
 
@@ -27,6 +28,7 @@ const ORDER = [
   'exif',
   'crop', 'orb', 'akaze', 'brisk', 'alignedSsim',
   'sscd', 'sscdLarge', 'dino', 'clip', 'lpips',
+  'objects',
 ];
 
 const post = (msg, transfer = []) => self.postMessage(msg, transfer);
@@ -150,7 +152,8 @@ async function prepare(input) {
 // ---------------------------------------------------------------- context
 
 class Ctx {
-  constructor(a, b) {
+  constructor(a, b, disabled = []) {
+    this.disabled = disabled;
     this.a = a;
     this.b = b;
     this.memo = new Map();
@@ -270,6 +273,189 @@ function sameRegion(big, small, x0, y0) {
     for (let i = 0; i < rowLen; i++) if (big.rgba[bo + i] !== small.rgba[so + i]) return false;
   }
   return true;
+}
+
+// ---------------------------------------------------------------- objects
+
+const mat3 = (A, B) => [
+  A[0] * B[0] + A[1] * B[3] + A[2] * B[6], A[0] * B[1] + A[1] * B[4] + A[2] * B[7], A[0] * B[2] + A[1] * B[5] + A[2] * B[8],
+  A[3] * B[0] + A[4] * B[3] + A[5] * B[6], A[3] * B[1] + A[4] * B[4] + A[5] * B[7], A[3] * B[2] + A[4] * B[5] + A[5] * B[8],
+  A[6] * B[0] + A[7] * B[3] + A[8] * B[6], A[6] * B[1] + A[7] * B[4] + A[8] * B[7], A[6] * B[2] + A[7] * B[5] + A[8] * B[8],
+];
+const scale3 = (k) => [k, 0, 0, 0, k, 0, 0, 0, 1];
+const union = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
+const scaleBox = (b, k) => b.map((v) => v * k);
+const MAX_OBJECT_PAIRS = 16;
+
+/** Best keypoint homography (B work pixels -> A work pixels), if trustworthy. */
+function workHomography(c) {
+  const best = Object.values(c.features)
+    .filter((r) => r.sane && r.inliers >= 20)
+    .sort((x, y) => y.inliers - x.inliers)[0];
+  if (!best) return null;
+  const sa = c.featureImg('a').w / c.a.work.w;
+  const sb = c.featureImg('b').w / c.b.work.w;
+  return mat3(mat3(scale3(1 / sa), best.H), scale3(sb));
+}
+
+function objectVerdict(aligned, m) {
+  const sscdOk = m.sscd === undefined ? null : m.sscd;
+  if (aligned) {
+    if (m.changed <= 0.1 && !(m.ssim < 0.8)) return 'match';
+    if ((sscdOk ?? 1) >= 0.5 || m.changed <= 0.4) return 'partial';
+    return 'none';
+  }
+  if (sscdOk !== null) return sscdOk >= 0.75 ? 'match' : sscdOk >= 0.5 ? 'partial' : 'none';
+  return m.combined >= 0.75 ? 'match' : m.combined >= 0.5 ? 'partial' : 'none';
+}
+
+async function compareObjects(c) {
+  const [ort, det] = await Promise.all([loadOrt(), session('dfine')]);
+  const A = c.a.work;
+  const B = c.b.work;
+  const detect = async (img) => {
+    const out = await det.run({ pixel_values: new ort.Tensor('float32', O.detectorInput(img), [1, 3, O.DETECT_SIZE, O.DETECT_SIZE]) });
+    return O.postprocess(out.logits.data, out.pred_boxes.data, img.w, img.h);
+  };
+  const detsA = await detect(A);
+  const detsB = await detect(B);
+  const toOrigA = c.a.w / A.w;
+  const toOrigB = c.b.w / B.w;
+  const visual = {
+    a: { dets: detsA.map((d) => ({ label: d.label, score: d.score, box: scaleBox(d.box, toOrigA) })) },
+    b: { dets: detsB.map((d) => ({ label: d.label, score: d.score, box: scaleBox(d.box, toOrigB) })) },
+    pairs: [],
+    onlyA: [],
+    onlyB: [],
+  };
+  c.visuals.objects = visual;
+  if (!detsA.length && !detsB.length) {
+    visual.mode = 'none';
+    return { verdict: 'na', display: 'no objects found', note: 'The detector found none of its 365 object categories in either image.' };
+  }
+
+  const Hw = workHomography(c);
+  const aligned = !!Hw;
+  visual.mode = aligned ? 'aligned' : 'appearance';
+  let pairs;
+  let boxesBinA = null;
+  let Ao = null;
+  let Bo = null;
+  let maskO = null;
+  let kA = 1;
+  const cropsA = detsA.map((d) => O.cropBox(A, d.box));
+  const cropsB = detsB.map((d) => O.cropBox(B, d.box));
+  if (aligned) {
+    boxesBinA = detsB.map((d) => O.mapBox(Hw, d.box));
+    pairs = O.matchByPosition(detsA, boxesBinA, detsB);
+    const [ow, oh] = fitWithin(A.w, A.h, 1024);
+    kA = ow / A.w;
+    Ao = resizeImg(A, ow, oh, 'bilinear');
+    const warped = F.warpRgbInto(await loadOpenCV(), B, mat3(scale3(kA), Hw), ow, oh);
+    Bo = warped.img;
+    maskO = warped.mask;
+  } else {
+    const sims = new Map();
+    pairs = O.matchByAppearance(detsA, detsB, (i, j) => {
+      const r = O.cropSimilarity(cropsA[i], cropsB[j]);
+      sims.set(`${i},${j}`, r);
+      return r.combined;
+    });
+    for (const p of pairs) p.sim = sims.get(`${p.i},${p.j}`);
+  }
+
+  // Boxes of every detection in the comparison frame, used to keep changes to
+  // a small object from counting against the larger object it sits on.
+  const inner = aligned
+    ? [
+        ...detsA.map((d, i) => ({ id: `a${i}`, box: scaleBox(d.box, kA) })),
+        ...boxesBinA.map((b, j) => ({ id: `b${j}`, box: scaleBox(b, kA) })),
+      ]
+    : [];
+  const area = (b) => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+  const nestedIn = (region, skip) =>
+    inner
+      .filter((o) => !skip.includes(o.id) && area(o.box) < 0.7 * area(region))
+      .filter((o) => {
+        const w = Math.min(o.box[2], region[2]) - Math.max(o.box[0], region[0]);
+        const h = Math.min(o.box[3], region[3]) - Math.max(o.box[1], region[1]);
+        return w > 0 && h > 0 && (w * h) / area(o.box) > 0.5;
+      })
+      .map((o) => o.box);
+
+  const useSscd = !c.disabled.includes('sscd');
+  const sscd = useSscd ? await session('sscd') : null;
+  const results = [];
+  for (const p of pairs.slice(0, MAX_OBJECT_PAIRS)) {
+    const m = {};
+    const thumbs = {};
+    if (aligned) {
+      const region = scaleBox(union(detsA[p.i].box, boxesBinA[p.j]), kA);
+      const r = O.compareRegion(Ao, Bo, maskO, region, nestedIn(region, [`a${p.i}`, `b${p.j}`]));
+      if (r) {
+        m.ssim = r.ssim;
+        m.deltaE = r.deltaE;
+        m.changed = r.changed;
+        thumbs.a = rgbToRgba(O.thumb(r.crops.a));
+        thumbs.b = rgbToRgba(O.thumb(r.crops.b));
+        const heat = heatmap(r.deltaEMap.map((v) => v / 25), r.w, r.h, r.mask);
+        const t = O.thumb({ w: r.w, h: r.h, rgb: rgbaToRgb(heat.data, r.w, r.h).rgb });
+        thumbs.diff = rgbToRgba(t);
+      }
+    } else {
+      m.colour = p.sim.hist;
+      m.ssim = p.sim.ssim;
+      m.combined = p.sim.combined;
+    }
+    if (!thumbs.a) {
+      thumbs.a = rgbToRgba(O.thumb(cropsA[p.i]));
+      thumbs.b = rgbToRgba(O.thumb(cropsB[p.j]));
+    }
+    if (sscd) m.sscd = N.cosine(await N.embed(ort, sscd, 'sscd', cropsA[p.i]), await N.embed(ort, sscd, 'sscd', cropsB[p.j]));
+    if (aligned && m.changed === undefined) m.changed = 0;
+    results.push({ i: p.i, j: p.j, label: detsA[p.i].label === detsB[p.j].label ? detsA[p.i].label : `${detsA[p.i].label} / ${detsB[p.j].label}`, metrics: m, verdict: objectVerdict(aligned, m), thumbs });
+  }
+  const rank = { none: 0, partial: 1, match: 2 };
+  results.sort((x, y) => rank[x.verdict] - rank[y.verdict] || (y.metrics.changed ?? 0) - (x.metrics.changed ?? 0));
+  results.forEach((r, k) => (r.n = k + 1));
+  visual.pairs = results;
+
+  // Objects found in only one image. When aligned, check whether that spot changed.
+  const pairedA = new Set(pairs.map((p) => p.i));
+  const pairedB = new Set(pairs.map((p) => p.j));
+  const regionChange = (box, skip) => {
+    if (!aligned) return null;
+    const region = scaleBox(box, kA);
+    return O.compareRegion(Ao, Bo, maskO, region, nestedIn(region, skip))?.changed ?? null;
+  };
+  visual.onlyA = detsA
+    .map((d, i) => ({ i, d }))
+    .filter(({ i }) => !pairedA.has(i))
+    .map(({ i, d }) => ({ i, changed: regionChange(d.box, [`a${i}`]), thumb: rgbToRgba(O.thumb(cropsA[i])) }));
+  visual.onlyB = detsB
+    .map((d, j) => ({ j, d }))
+    .filter(({ j }) => !pairedB.has(j))
+    .map(({ j, d }) => ({ j, changed: regionChange(boxesBinA ? boxesBinA[j] : d.box, [`b${j}`]), thumb: rgbToRgba(O.thumb(cropsB[j])) }));
+
+  const unchanged = results.filter((r) => r.verdict === 'match').length;
+  const changed = results.length - unchanged;
+  const total = Math.max(detsA.length, detsB.length);
+  let verdict = 'none';
+  if (unchanged / total >= 0.8) verdict = 'match';
+  else if (pairs.length / total >= 0.5) verdict = 'partial';
+  const unpaired = visual.onlyA.length + visual.onlyB.length;
+  return {
+    value: pairs.length,
+    verdict,
+    display: `${pairs.length} paired · ${changed} changed${unpaired ? ` · ${unpaired} unpaired` : ''}`,
+    detail: {
+      'objects in A / B': `${detsA.length} / ${detsB.length}`,
+      'paired by': aligned ? 'position (images aligned with keypoints)' : 'kind and appearance (images could not be aligned)',
+      'unchanged / changed': `${unchanged} / ${changed}`,
+      'only in A / only in B': `${visual.onlyA.length} / ${visual.onlyB.length}`,
+    },
+    note: pairs.length > MAX_OBJECT_PAIRS ? `Only the first ${MAX_OBJECT_PAIRS} pairs were compared in detail.` : undefined,
+  };
 }
 
 const RUN = {
@@ -470,6 +656,7 @@ const RUN = {
     return { value: res.value, detail: { 'aligned with': kind.toUpperCase(), 'overlap with A': `${Math.round(coverage * 100)}%` } };
   },
 
+  objects: (c) => compareObjects(c),
   sscd: (c) => embedCompare(c, 'sscd'),
   sscdLarge: (c) => embedCompare(c, 'sscdLarge'),
   dino: (c) => embedCompare(c, 'dino'),
@@ -528,7 +715,7 @@ async function scan({ scanId, a, b, disabled }) {
   post({ type: 'status', scanId, text: 'Decoding images…' });
   const A = await prepare(a);
   const B = await prepare(b);
-  const c = new Ctx(A, B);
+  const c = new Ctx(A, B, disabled);
   for (const [side, img] of [['a', A], ['b', B]]) {
     Object.assign(c.info[side], {
       dimensions: `${img.w} × ${img.h}`,

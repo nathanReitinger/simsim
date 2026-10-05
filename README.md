@@ -2,7 +2,7 @@
 
 **Live site: <https://nathanreitinger.github.io/simsim/>**
 
-A VirusTotal-style scanner for image similarity. Drop two images and **35 tests** run side by side — from
+A VirusTotal-style scanner for image similarity. Drop two images and **36 tests** run side by side — from
 byte-level file hashes to Meta's **SSCD** copy detector — and the page reports how many of them flag the pair
 as similar, with an explanation of every test.
 
@@ -16,6 +16,7 @@ Built for teaching computer science & law (copyright, memorisation in generative
 | Group | Tests |
 | --- | --- |
 | **Neural copy detection** | SSCD ResNet-50 (`sscd_disc_mixup`, official preprocessing) · SSCD ResNeXt-101 in the Somepalli et al. replication setting (`sscd_disc_large`, resize 256 / centre-crop 224) · DINOv2 ViT-S/14 · CLIP ViT-B/32 · LPIPS (AlexNet) |
+| **Objects** | D-FINE object detector (365 Objects365 categories): objects are found in both images, paired up and compared one by one, with marked-up images in the Objects tab |
 | **Exact & verbatim** | SHA-256 · SHA-1 · MD5 · pixel-exact match of decoded pixels · verbatim crop search (template matching, verified pixel-for-pixel) |
 | **Perceptual hashes** | PDQ (Meta) · PDQ over all 8 rotations/mirrors · pHash · dHash · aHash · wHash · Blockhash |
 | **Keypoints & geometry** | ORB, AKAZE and BRISK keypoints with RANSAC homography · SSIM after aligning B onto A |
@@ -88,7 +89,8 @@ The `tools/` folder contains the conversion scripts:
   (`sscd_disc_mixup`, `sscd_disc_large`, MIT licence) to ONNX.
 - [`tools/export_lpips.py`](tools/export_lpips.py) — exports LPIPS v0.1 (AlexNet) from the `lpips` package.
 - [`tools/export_hf_vision.py`](tools/export_hf_vision.py) — takes the full-precision ONNX exports of CLIP ViT-B/32
-  (Xenova) and DINOv2-small (onnx-community) from Hugging Face at pinned revisions.
+  (Xenova), DINOv2-small and the D-FINE-M Objects365 detector (onnx-community) from Hugging Face at pinned
+  revisions.
 - [`tools/quantize_weights.py`](tools/quantize_weights.py) — stores each large weight as int8 with a per-channel
   scale and rebuilds it in fp32 inside the graph, so inference still runs in fp32. The few layers that are
   sensitive to rounding (the stem / first blocks / patch embedding, found by a per-layer sensitivity sweep) stay
@@ -124,6 +126,7 @@ The JavaScript implementations were checked against the standard Python implemen
 ## Credits and licences
 
 - SSCD: Pizzi et al., *A Self-Supervised Descriptor for Image Copy Detection*, CVPR 2022 — MIT.
+- D-FINE: Peng et al., ICLR 2025 — Apache-2.0; trained on Objects365 (Shao et al., ICCV 2019).
 - DINOv2: Oquab et al., 2023 — Apache-2.0. CLIP: Radford et al., 2021 — MIT. LPIPS: Zhang et al., CVPR 2018 —
   BSD-2-Clause (AlexNet weights from torchvision, BSD-3-Clause).
   Licence texts are in [`models/licenses/`](models/licenses).

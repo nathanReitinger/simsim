@@ -28,13 +28,14 @@ function el(tag, attrs = {}, ...children) {
 
 const COUNTED = new Set(['identical', 'match', 'partial', 'none']);
 const FLAGGED = new Set(['identical', 'match']);
-const MODEL_ORDER = ['sscd', 'lpips', 'dino', 'sscdLarge', 'clip'];
+const MODEL_ORDER = ['sscd', 'lpips', 'dino', 'dfine', 'sscdLarge', 'clip'];
 const MODEL_INFO = {
   sscd: { name: 'SSCD (ResNet-50)', note: 'The main copy detector. Recommended.' },
   sscdLarge: { name: 'SSCD large (ResNeXt-101)', note: 'Replication-study setting from Somepalli et al.' },
   dino: { name: 'DINOv2 small', note: 'General visual similarity.' },
   clip: { name: 'CLIP ViT-B/32', note: 'Semantic similarity; the largest download.' },
   lpips: { name: 'LPIPS (AlexNet)', note: 'Perceptual distance; tiny.' },
+  dfine: { name: 'D-FINE object detector', note: 'Finds hats, pictures, tables… for the Objects tab.' },
 };
 const ICONS = {
   identical: '<svg viewBox="0 0 24 24"><path d="M6 9.5h12M6 14.5h12"/></svg>',
@@ -77,6 +78,9 @@ const state = {
   downloads: {},
   view: 'swipe',
   viewChosen: false,
+  openGroups: new Set(['neural', 'objects']),
+  objectView: 'markup',
+  objectHighlight: null,
   case: null, // copyright case whose works are loaded in A and B
   caseImages: {}, // case id -> image paths, from assets/cases/manifest.json
   openEngines: new Set(),
@@ -165,6 +169,7 @@ function onWorkerMessage(e) {
       state.visuals = m.visuals;
       renderViewModes();
       renderVisual();
+      renderObjects();
       break;
     case 'done':
       state.scanning = false;
@@ -367,6 +372,8 @@ async function startScan() {
   const s = $('.summary');
   delete s.dataset.tone;
   renderCaseBanner();
+  state.objectHighlight = null;
+  renderObjects();
   renderGroups();
   renderSpotlight();
   renderViewModes();
@@ -411,18 +418,32 @@ function renderGroups() {
       engineEls[engine.id] = node;
       list.append(node);
     }
-    root.append(
+    const details = el(
+      'details',
+      { class: 'group card', 'data-group': g.id, open: state.openGroups.has(g.id) },
       el(
-        'section',
-        { class: 'group card', 'data-group': g.id },
-        el('div', { class: 'group-head' }, el('h3', {}, g.title), el('span', { class: 'group-count' })),
-        el('p', { class: 'group-blurb' }, g.blurb),
-        list,
+        'summary',
+        { class: 'group-head' },
+        el('span', { class: 'group-chevron', 'aria-hidden': 'true' }),
+        el('h3', {}, g.title),
+        el('span', { class: 'group-dots', 'aria-hidden': 'true' }, engines.map((e) => el('i', { class: 'gdot', 'data-id': e.id, title: e.name }))),
+        el('span', { class: 'group-count' }),
       ),
+      el('p', { class: 'group-blurb' }, g.blurb),
+      list,
     );
+    details.addEventListener('toggle', () => {
+      if (details.open) state.openGroups.add(g.id);
+      else state.openGroups.delete(g.id);
+    });
+    root.append(details);
     for (const engine of engines) renderEngine(engine.id);
   }
   updateGroupCounts();
+}
+
+function setAllGroups(open) {
+  for (const d of $$('#groups details.group')) d.open = open;
 }
 
 function engineElement(engine) {
@@ -529,6 +550,10 @@ function updateGroupCounts() {
     const counted = ids.filter((id) => COUNTED.has(state.results[id]?.verdict));
     const flagged = counted.filter((id) => FLAGGED.has(state.results[id].verdict)).length;
     sec.innerHTML = counted.length ? `<b>${flagged}</b> / ${counted.length} flagged` : '';
+    for (const dot of $$(`.group[data-group="${g.id}"] .gdot`)) {
+      const v = state.results[dot.dataset.id]?.verdict || 'pending';
+      dot.dataset.verdict = v === 'skipped' || v === 'error' ? 'na' : v;
+    }
   }
 }
 
@@ -903,6 +928,186 @@ function drawAligned(v, displayWidth) {
   });
   const toggle = el('label', { class: 'ctl-check' }, el('input', { type: 'checkbox', onchange: (e) => ((mode = e.target.checked ? 'diff' : 'fade'), draw()) }), 'show remaining differences');
   return el('div', {}, out, el('div', { class: 'viewer-controls' }, 'A', slider, 'aligned B', toggle));
+}
+
+// ------------------------------------------------------------------ objects
+
+const OBJECT_VERDICTS = {
+  aligned: { match: 'Unchanged', partial: 'Modified', none: 'Different' },
+  appearance: { match: 'Copy', partial: 'Similar', none: 'Different' },
+};
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const objectColor = (verdict) => cssVar(verdict === 'match' ? '--none' : verdict === 'partial' ? '--partial' : '--match');
+
+function objectMetricsText(m, mode) {
+  const parts = [];
+  if (mode === 'aligned' && m.changed !== undefined) parts.push(`${Math.round(m.changed * 100)}% of pixels changed`);
+  if (m.deltaE !== undefined) parts.push(`ΔE ${m.deltaE.toFixed(1)}`);
+  if (m.ssim !== undefined && Number.isFinite(m.ssim)) parts.push(`SSIM ${m.ssim.toFixed(2)}`);
+  if (m.colour !== undefined) parts.push(`colour ${m.colour.toFixed(2)}`);
+  if (m.sscd !== undefined) parts.push(`SSCD ${m.sscd.toFixed(2)}`);
+  return parts.join(' · ');
+}
+
+/** Boxes to draw on one image: paired objects (numbered) and unpaired ones. */
+function objectMarks(o, side) {
+  const dets = o[side].dets;
+  const marks = o.pairs.map((p) => ({
+    box: dets[side === 'a' ? p.i : p.j].box,
+    color: objectColor(p.verdict),
+    tag: `${p.n} ${dets[side === 'a' ? p.i : p.j].label}`,
+    n: p.n,
+  }));
+  for (const x of side === 'a' ? o.onlyA : o.onlyB) {
+    const d = dets[side === 'a' ? x.i : x.j];
+    marks.push({ box: d.box, color: cssVar('--match'), tag: `${d.label} · only in ${side.toUpperCase()}`, dashed: true, n: `${side}${side === 'a' ? x.i : x.j}` });
+  }
+  return marks;
+}
+
+function drawObjectCanvas(canvas, slot, marks) {
+  const bm = state.slots[slot].bitmap;
+  const s = Math.min(1, 1100 / Math.max(bm.width, bm.height));
+  canvas.width = Math.round(bm.width * s);
+  canvas.height = Math.round(bm.height * s);
+  const g = canvas.getContext('2d');
+  g.drawImage(bm, 0, 0, canvas.width, canvas.height);
+  if (state.objectView === 'original') return;
+  const lw = Math.max(2, canvas.width / 320);
+  const font = Math.max(11, Math.round(canvas.width / 48));
+  g.font = `600 ${font}px ${cssVar('--sans') || 'sans-serif'}`;
+  g.textBaseline = 'top';
+  const hi = state.objectHighlight;
+  for (const m of marks) {
+    const [x1, y1, x2, y2] = m.box.map((v) => v * s);
+    g.globalAlpha = hi === null || hi === m.n ? 1 : 0.25;
+    g.lineWidth = hi === m.n ? lw * 2 : lw;
+    g.strokeStyle = m.color;
+    g.setLineDash(m.dashed ? [lw * 3, lw * 2] : []);
+    g.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    g.setLineDash([]);
+    const tw = g.measureText(m.tag).width + font * 0.6;
+    const ty = y1 - font * 1.35 >= 0 ? y1 - font * 1.35 : y1;
+    g.fillStyle = m.color;
+    g.fillRect(x1, ty, tw, font * 1.35);
+    g.fillStyle = '#fff';
+    g.fillText(m.tag, x1 + font * 0.3, ty + font * 0.18);
+  }
+  g.globalAlpha = 1;
+}
+
+function renderObjects() {
+  const panel = $('#objectsPanel');
+  if (!panel) return;
+  panel.innerHTML = '';
+  const o = state.visuals?.objects;
+  const r = state.results.objects;
+  if (!o) {
+    let msg = 'Objects are detected near the end of the scan; they appear here when it finishes.';
+    if (r?.verdict === 'skipped' || isDisabled('dfine')) msg = 'The object detector is turned off in Settings.';
+    else if (r?.verdict === 'error') msg = `Object detection failed: ${r.note}`;
+    else if (!state.scanning && !Object.keys(state.results).length) msg = 'Scan two images to see their objects.';
+    panel.append(el('p', { class: 'muted objects-empty' }, msg));
+    return;
+  }
+  const words = OBJECT_VERDICTS[o.mode] || OBJECT_VERDICTS.aligned;
+  const count = (v) => o.pairs.filter((p) => p.verdict === v).length;
+  const how =
+    o.mode === 'aligned'
+      ? 'The images were aligned with keypoints, so objects are paired by position and compared pixel by pixel.'
+      : o.mode === 'appearance'
+        ? 'The images could not be aligned, so objects are paired by kind and appearance.'
+        : '';
+  panel.append(
+    el(
+      'div',
+      { class: 'objects-head' },
+      el(
+        'p',
+        {},
+        el('b', {}, `${o.a.dets.length} objects in A, ${o.b.dets.length} in B. `),
+        `${o.pairs.length} paired: ${count('match')} ${words.match.toLowerCase()}, ${count('partial')} ${words.partial.toLowerCase()}, ${count('none')} ${words.none.toLowerCase()}; ${o.onlyA.length} only in A, ${o.onlyB.length} only in B. `,
+        el('span', { class: 'muted' }, how),
+      ),
+      el(
+        'div',
+        { class: 'objects-controls' },
+        ['markup', 'original'].map((v) =>
+          el(
+            'button',
+            {
+              type: 'button',
+              class: 'pill',
+              'aria-pressed': String(state.objectView === v),
+              onclick: () => {
+                state.objectView = v;
+                renderObjects();
+              },
+            },
+            v === 'markup' ? 'Marked up' : 'Original',
+          ),
+        ),
+        el('span', { class: 'objects-legend' }, el('i', { class: 'dot none' }), words.match, el('i', { class: 'dot partial' }), words.partial, el('i', { class: 'dot match' }), `${words.none} / unpaired`),
+      ),
+    ),
+  );
+  const canvases = {};
+  const figures = ['a', 'b'].map((side) => {
+    canvases[side] = el('canvas', { class: 'objects-canvas' });
+    return el('figure', {}, canvases[side], el('figcaption', {}, `Image ${side.toUpperCase()} · ${o[side].dets.length} objects`));
+  });
+  panel.append(el('div', { class: 'objects-images' }, figures));
+  const redraw = () => {
+    drawObjectCanvas(canvases.a, 'a', objectMarks(o, 'a'));
+    drawObjectCanvas(canvases.b, 'b', objectMarks(o, 'b'));
+  };
+  redraw();
+  const hover = (n) => {
+    state.objectHighlight = n;
+    redraw();
+  };
+
+  const list = el('div', { class: 'objects-list' });
+  for (const p of o.pairs) {
+    list.append(
+      el(
+        'div',
+        { class: 'obj-row', 'data-verdict': p.verdict, onmouseenter: () => hover(p.n), onmouseleave: () => hover(null) },
+        el('span', { class: 'obj-n' }, p.n),
+        el(
+          'div',
+          { class: 'obj-thumbs' },
+          el('figure', {}, canvasFrom(p.thumbs.a), el('figcaption', {}, 'A')),
+          el('figure', {}, canvasFrom(p.thumbs.b), el('figcaption', {}, o.mode === 'aligned' ? 'B, aligned' : 'B')),
+          p.thumbs.diff ? el('figure', {}, canvasFrom(p.thumbs.diff), el('figcaption', {}, 'difference')) : null,
+        ),
+        el('div', { class: 'obj-info' }, el('strong', {}, p.label), el('div', { class: 'obj-metrics' }, objectMetricsText(p.metrics, o.mode))),
+        el('span', { class: 'obj-verdict' }, words[p.verdict]),
+      ),
+    );
+  }
+  for (const side of ['a', 'b']) {
+    for (const x of side === 'a' ? o.onlyA : o.onlyB) {
+      const d = o[side].dets[side === 'a' ? x.i : x.j];
+      const other = side === 'a' ? 'B' : 'A';
+      let note = `Not found in ${other}.`;
+      if (x.changed !== null && x.changed !== undefined) {
+        note += x.changed > 0.3 ? ` That spot changed in ${other} (${Math.round(x.changed * 100)}% of pixels).` : ` That spot looks unchanged in ${other}, so the detector may simply have missed it.`;
+      }
+      const n = `${side}${side === 'a' ? x.i : x.j}`;
+      list.append(
+        el(
+          'div',
+          { class: 'obj-row', 'data-verdict': 'none', onmouseenter: () => hover(n), onmouseleave: () => hover(null) },
+          el('span', { class: 'obj-n' }, '–'),
+          el('div', { class: 'obj-thumbs' }, x.thumb ? el('figure', {}, canvasFrom(x.thumb), el('figcaption', {}, side.toUpperCase())) : null),
+          el('div', { class: 'obj-info' }, el('strong', {}, d.label), el('div', { class: 'obj-metrics' }, `${note} Detector confidence ${d.score.toFixed(2)}.`)),
+          el('span', { class: 'obj-verdict' }, `Only in ${side.toUpperCase()}`),
+        ),
+      );
+    }
+  }
+  panel.append(list);
 }
 
 // ------------------------------------------------------------------ details table
@@ -1391,7 +1596,15 @@ function renderCatalogue() {
         ),
       );
     }
-    root.append(el('section', { class: 'cat-group' }, el('h3', {}, g.title), el('p', {}, g.blurb), grid));
+    root.append(
+      el(
+        'details',
+        { class: 'cat-group' },
+        el('summary', {}, el('span', { class: 'group-chevron', 'aria-hidden': 'true' }), el('h3', {}, g.title), el('span', { class: 'muted small' }, `${grid.children.length} test${grid.children.length === 1 ? '' : 's'}`)),
+        el('p', {}, g.blurb),
+        grid,
+      ),
+    );
   }
 }
 
@@ -1430,6 +1643,7 @@ function setupTabs() {
       for (const t of $$('.tab')) t.setAttribute('aria-selected', String(t === tab));
       for (const p of $$('.tabpanel')) p.hidden = p.id !== `tab-${tab.dataset.tab}`;
       if (tab.dataset.tab === 'visual') renderVisual();
+      if (tab.dataset.tab === 'objects') renderObjects();
     });
   }
 }
@@ -1448,6 +1662,8 @@ function init() {
     e.stopPropagation();
     openLab();
   });
+  $('#expandAll').addEventListener('click', () => setAllGroups(true));
+  $('#collapseAll').addEventListener('click', () => setAllGroups(false));
   $('#exportBtn').addEventListener('click', exportJson);
   $('#copyBtn').addEventListener('click', copySummary);
   $('#settingsBtn').addEventListener('click', () => {
@@ -1465,6 +1681,7 @@ function init() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (!$('#tab-visual').hidden) renderVisual();
+      if (!$('#tab-objects').hidden) renderObjects();
     }, 200);
   });
   refreshDownloadNote();

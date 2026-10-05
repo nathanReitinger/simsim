@@ -39,7 +39,7 @@
       <section class="hero" id="upload">
         <h1>Are these two images the same?</h1>
         <p class="lede">
-          Drop two images and run <strong>35 similarity tests</strong> side by side — from byte-level file hashes to Meta’s
+          Drop two images and run <strong>36 similarity tests</strong> side by side — from byte-level file hashes to Meta’s
           SSCD copy detector. Everything runs in your browser; <strong>your images are never uploaded</strong>.
         </p>
 
@@ -132,6 +132,7 @@
 
         <div class="tabs" role="tablist">
           <button type="button" role="tab" class="tab" aria-selected="true" data-tab="detection">Detection</button>
+          <button type="button" role="tab" class="tab" aria-selected="false" data-tab="objects">Objects</button>
           <button type="button" role="tab" class="tab" aria-selected="false" data-tab="visual">Visual comparison</button>
           <button type="button" role="tab" class="tab" aria-selected="false" data-tab="details">Details</button>
         </div>
@@ -145,8 +146,16 @@
             <span><i class="dot none"></i>No match</span>
             <span><i class="dot na"></i>Not applicable / off</span>
             <span class="legend-hint">Click any test for an explanation.</span>
+            <span class="legend-actions">
+              <button type="button" class="linklike" id="expandAll">Expand all</button>
+              <button type="button" class="linklike" id="collapseAll">Collapse all</button>
+            </span>
           </div>
           <div id="groups"></div>
+        </div>
+
+        <div class="tabpanel" id="tab-objects" role="tabpanel" hidden>
+          <div class="card objects-card" id="objectsPanel"></div>
         </div>
 
         <div class="tabpanel" id="tab-visual" role="tabpanel" hidden>
@@ -212,7 +221,7 @@
 
     <footer class="footer">
       <p>
-        Built for teaching computer science &amp; law. Models: SSCD (Meta AI, MIT), DINOv2 (Meta AI, Apache-2.0), CLIP
+        Built for teaching computer science &amp; law. Models: SSCD (Meta AI, MIT), DINOv2 (Meta AI, Apache-2.0), D-FINE (Apache-2.0), CLIP
         (OpenAI, MIT), LPIPS (BSD-2). Libraries: ONNX Runtime Web (MIT), OpenCV.js (Apache-2.0), exifr (MIT). Sample photos:
         NASA, SpaceX (public domain), Stefan van der Walt and Rachel Michetti (CC0), via scikit-image.
       </p>

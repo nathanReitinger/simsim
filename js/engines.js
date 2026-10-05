@@ -10,6 +10,12 @@ export const GROUPS = [
       'Deep networks map each image to a vector ("embedding"); similar images land close together. SSCD is trained specifically to recognise copies, while CLIP and DINOv2 measure general visual or semantic resemblance.',
   },
   {
+    id: 'objects',
+    title: 'Objects',
+    blurb:
+      'An object detector (D-FINE, trained on the 365 everyday categories of Objects365) finds things like hats, pictures and tables in each image. The objects are paired up across the two images and compared one by one; the Objects tab shows the marked-up images.',
+  },
+  {
     id: 'exact',
     title: 'Exact & verbatim copies',
     blurb:
@@ -160,6 +166,28 @@ export const ENGINES = [
     weak: ['crops, flips, rotations (misalignment)'],
     refs: [{ label: 'Zhang et al., CVPR 2018', url: 'https://arxiv.org/abs/1801.03924' }],
     pipeline: 'Both images resized to A’s aspect ratio with a 256 px long side, scaled to [-1, 1].',
+  },
+
+  // ------------------------------------------------------------ objects
+  {
+    id: 'objects',
+    group: 'objects',
+    name: 'Object-level comparison',
+    by: 'D-FINE-M detector · Objects365 · 365 categories',
+    metric: 'objects paired across the two images, and how many changed',
+    better: 'equal',
+    model: 'dfine',
+    about:
+      'Detects objects in both images and pairs them up — by position when the images can be aligned with keypoints, otherwise by kind and appearance — then compares each pair: the pixels inside the object (when aligned) and the SSCD copy similarity of the two cut-outs.',
+    thresholds:
+      'Match: at least 80% of the objects appear in both images unchanged. Partial: at least half of them pair up. An aligned object counts as changed when more than 10% of its pixels change colour (ΔE₀₀ > 6) or its SSIM falls below 0.8.',
+    robust: ['crops', 'rescaling', 'objects that move (matched by appearance)'],
+    weak: ['things outside the 365 categories', 'small or hidden objects', 'stylised or abstract art'],
+    refs: [
+      { label: 'D-FINE (Peng et al., ICLR 2025)', url: 'https://arxiv.org/abs/2410.13842' },
+      { label: 'Objects365 (Shao et al., ICCV 2019)', url: 'https://doi.org/10.1109/ICCV.2019.00852' },
+    ],
+    pipeline: 'Each image resized to 640×640; detections above 0.35 confidence; duplicates suppressed so each object keeps one label.',
   },
 
   // ------------------------------------------------------------ exact
