@@ -2466,3 +2466,123 @@ details.group[open] .group-head {
     padding-left: 18px;
   }
 }
+
+/* ------------------------------------------------------------ marked-up views */
+
+.ann-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.ann-stage {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.ann-stage canvas {
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+  touch-action: manipulation;
+}
+
+.ann-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 8px;
+}
+
+.ann-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    transform 0.15s;
+}
+
+.ann-list li:hover,
+.ann-list li:focus-visible,
+.ann-list li.on {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow);
+  outline: none;
+}
+
+.ann-list li.on {
+  transform: translateY(-1px);
+}
+
+.ann-num {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  box-shadow: 0 0 0 2px #fff, 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+.ann-thumbs {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ann-thumbs canvas {
+  width: auto;
+  height: 46px;
+  max-width: 64px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.ann-to {
+  font-weight: 800;
+  font-size: 15px;
+}
+
+.ann-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.ann-text strong {
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ann-text span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+@media (max-width: 560px) {
+  .ann-list {
+    grid-template-columns: 1fr;
+  }
+}

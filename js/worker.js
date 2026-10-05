@@ -10,6 +10,7 @@ import * as G from './lib/histogram.js';
 import * as F from './lib/features.js';
 import * as N from './lib/neural.js';
 import * as O from './lib/objects.js';
+import * as Ann from './lib/annotate.js';
 import { grayToRgba, heatmap, rgbToRgba } from './lib/colormap.js';
 import exifr from '../vendor/exifr/exifr.full.esm.js';
 
@@ -319,6 +320,7 @@ async function compareObjects(c) {
   };
   const detsA = await detect(A);
   const detsB = await detect(B);
+  c.objectDets = { a: detsA, b: detsB };
   const toOrigA = c.a.w / A.w;
   const toOrigB = c.b.w / B.w;
   const visual = {
@@ -695,6 +697,7 @@ const RUN = {
     const pa = await N.dinoPatches(ort, s, c.a.work);
     const pb = await N.dinoPatches(ort, s, c.b.work);
     const corr = N.patchCorrespondence(pa, pb);
+    c.dinoCorr = { mutual: corr.mutual, ga: { gw: pa.gw, gh: pa.gh }, gb: { gw: pb.gw, gh: pb.gh } };
     const share = corr.mutual.filter(([, , sim]) => sim >= 0.5).length / (pa.gw * pa.gh);
     c.visuals.dino = {
       a: { gw: pa.gw, gh: pa.gh, values: corr.bestA },
@@ -741,6 +744,89 @@ function finalize(engine, r) {
   return out;
 }
 
+// ---------------------------------------------------------------- annotations
+
+/**
+ * Human-style annotations for the result view: numbered differences when B
+ * can be aligned onto A, matching regions for the arrows, and SSCD's evidence
+ * peaks. Boxes are returned in each image's original pixel coordinates.
+ */
+async function buildAnnotations(c) {
+  const A = c.a.work;
+  const B = c.b.work;
+  const kA = c.a.w / A.w;
+  const kB = c.b.w / B.w;
+  const dets = c.objectDets || { a: [], b: [] };
+  const out = { aligned: false, global: false, differences: [], regions: [], peaks: null };
+  const toOrig = (box, k) => box.map((v) => v * k);
+  const fracBox = (f, img) => [f[0] * img.w, f[1] * img.h, f[2] * img.w, f[3] * img.h];
+  const pad = (box, img, p = 0.12) => {
+    const pw = (box[2] - box[0]) * p + 4;
+    const ph = (box[3] - box[1]) * p + 4;
+    return [Math.max(0, box[0] - pw), Math.max(0, box[1] - ph), Math.min(img.w, box[2] + pw), Math.min(img.h, box[3] + ph)];
+  };
+  const thumbOf = (img, box) => rgbToRgba(O.thumb(O.cropBox(img, pad(box, img), 0), 180));
+
+  // 1. Differences, only when B can be laid exactly over A.
+  let Hw = workHomography(c);
+  const R = c.results || {};
+  const sameShape = Math.abs(Math.log(A.w / A.h / (B.w / B.h))) < 0.03;
+  const pixelClose = (R.ssim?.value ?? 0) >= 0.5 || (R.pdq?.value ?? 256) <= 63;
+  if (!Hw && sameShape && pixelClose) Hw = [A.w / B.w, 0, 0, 0, A.h / B.h, 0, 0, 0, 1];
+  if (Hw) {
+    const cv = await loadOpenCV();
+    const [dw, dh] = fitWithin(A.w, A.h, 900);
+    const kd = dw / A.w;
+    const Ad = resizeImg(A, dw, dh, 'bilinear');
+    const al = Ann.alignDense(cv, Ad, B, mat3(scale3(kd), Hw), dw, dh);
+    const res = Ann.findDifferences(cv, Ad, al.img, al.mask);
+    out.aligned = true;
+    out.global = res.global;
+    out.alignment = { ecc: al.ecc.used, maxShift: al.maxShift };
+    res.regions.forEach((r, k) => {
+      const boxAw = r.box.map((v) => v / kd);
+      const boxBw = Ann.boxToB(al.toB, r.box);
+      out.differences.push({
+        n: k + 1,
+        a: toOrig(boxAw, kA),
+        b: toOrig(boxBw, kB),
+        label: Ann.labelFor(boxAw, dets.a, A.w * A.h) || Ann.labelFor(boxBw, dets.b, B.w * B.h),
+        kind: Ann.describeChange(Ad, al.img, r.box),
+        thumbs: { a: thumbOf(Ad, r.box), b: thumbOf(al.img, r.box) },
+      });
+    });
+  }
+
+  // 2. Matching regions from the DINOv2 patch matches, named by detected objects.
+  if (c.dinoCorr) {
+    const { mutual, ga, gb } = c.dinoCorr;
+    Ann.objectRegions(mutual, ga, gb, dets.a, dets.b, A, B).forEach((m, k) => {
+      out.regions.push({
+        n: k + 1,
+        a: toOrig(m.a, kA),
+        b: toOrig(m.b, kB),
+        sim: m.sim,
+        share: m.share,
+        labelA: m.labelA,
+        labelB: m.labelB,
+        thumbs: { a: thumbOf(A, m.a), b: thumbOf(B, m.b) },
+      });
+    });
+  }
+
+  // 3. Where SSCD's copy evidence peaks.
+  if (c.visuals.sscd) {
+    const peaks = (map, img, k, ds) =>
+      Ann.evidencePeaks(map).map((p) => {
+        const r = p.r * img.w;
+        const box = [p.x * img.w - r, p.y * img.h - r, p.x * img.w + r, p.y * img.h + r];
+        return { x: p.x * img.w * k, y: p.y * img.h * k, r: r * k, v: p.v, label: Ann.labelFor(box, ds, img.w * img.h) };
+      });
+    out.peaks = { score: c.visuals.sscd.score, a: peaks(c.visuals.sscd.a, A, kA, dets.a), b: peaks(c.visuals.sscd.b, B, kB, dets.b) };
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- scanning
 
 let currentScan = 0;
@@ -771,6 +857,7 @@ async function scan({ scanId, a, b, disabled }) {
   }
   post({ type: 'info', scanId, info: c.info });
 
+  c.results = {};
   for (const id of ORDER) {
     if (scanId !== currentScan) return;
     const engine = ENGINE_BY_ID[id];
@@ -788,11 +875,17 @@ async function scan({ scanId, a, b, disabled }) {
       result = { verdict: 'error', display: 'error', note: String((err && err.message) || err) };
     }
     result.ms = Math.round(performance.now() - t);
+    c.results[id] = result;
     if (scanId !== currentScan) return;
     post({ type: 'result', scanId, id, result });
     await tick();
   }
 
+  try {
+    c.visuals.annotations = await buildAnnotations(c);
+  } catch (err) {
+    console.warn('annotations failed', err);
+  }
   for (const side of ['a', 'b']) {
     c.info[side].md5 = md5(c[side].bytes);
     c.info[side].sha256 = await sha('SHA-256', c[side].bytes);

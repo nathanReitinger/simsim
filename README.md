@@ -33,17 +33,29 @@ elsewhere. All thresholds live in [`js/engines.js`](js/engines.js).
 
 ## Seeing where images are similar
 
-The **Where it’s similar** tab shows *where* the resemblance is, grouped by the question each view answers:
+The **Where it’s similar** tab, and the card at the top of the results, show *where* the resemblance is,
+grouped by the question each view answers:
 
+- **Marked up** — the images annotated like a marked-up handout, with marker circles, numbered badges, curved
+  arrows and labels, plus a numbered list of close-ups. Pointing at (or tapping) a number singles it out.
+  - *Differences* — spot-the-difference for two versions of one picture. B is laid over A with the keypoint
+    homography, refined by ECC and then by a smooth field of local shifts (tile-wise normalised cross-correlation,
+    median-filtered), so scans and redraws that no single transform explains still line up. A pixel then counts
+    as changed only when nothing within a few pixels of it in the other image has a similar colour, which forgives
+    leftover misalignment of lines while added, removed and recoloured things stand out. Each change is labelled
+    *added in B*, *missing in B*, *recoloured* or *changed*, and named by the object detector when it can.
+  - *Matching regions* — what B took from A, even when it was restaged or redrawn. DINOv2 mutual patch matches are
+    grouped by the objects D-FINE detects in A (and where their matches land in B), with spatially coherent groups
+    for everything else. Each pair is circled in its own colour and joined by an arrow from A to B.
+  - *Copy evidence (SSCD)* — SSCD’s score split exactly into per-region contributions, with circles on its peaks.
+    The model pools with GeM, which can be written as a sum over locations, so the cosine similarity decomposes
+    into a map whose cells add up to the score (following Stylianou, Souvenir & Pless, “Visualizing Deep
+    Similarity Networks”, WACV 2019). The export that adds this output is `tools/export_sscd.py --explain`.
 - **Same content?**
   - *Matching parts* — dense patch correspondences from DINOv2 features (mutual nearest neighbours, as in
     Amir et al., “Deep ViT Features as Dense Visual Descriptors”, 2021). Matched patches are marked with dots of
     the same colour in both images.
   - *Similarity heat map* — for every patch, how close its best match in the other image is.
-  - *Copy evidence (SSCD)* — SSCD’s score split exactly into per-region contributions. The model pools with GeM,
-    which can be written as a sum over locations, so the cosine similarity decomposes into a map whose cells add
-    up to the score (following Stylianou, Souvenir & Pless, “Visualizing Deep Similarity Networks”, WACV 2019).
-    The export that adds this output is `tools/export_sscd.py --explain`.
 - **Same details?** — keypoint matches and an aligned overlay.
 - **Same pixels?** — colour-difference and SSIM maps, swipe, blink, side by side.
 

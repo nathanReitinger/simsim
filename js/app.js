@@ -4,6 +4,7 @@ import { ModelStore } from './lib/modelstore.js';
 import { applyTransform, DEFAULTS, PRESETS, describe } from './transform.js';
 import { CASES, CASE_GROUPS } from './cases.js';
 import { lutColor } from './lib/colormap.js';
+import * as AV from './annotate-view.js';
 
 const ROOT = new URL('../', import.meta.url);
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -79,7 +80,8 @@ const state = {
   downloads: {},
   view: 'swipe',
   viewChosen: false,
-  whereLens: 'parts',
+  whereLens: null,
+  whereChosen: false,
   openGroups: new Set(['neural', 'objects']),
   objectView: 'markup',
   objectHighlight: null,
@@ -377,6 +379,7 @@ async function startScan() {
   delete s.dataset.tone;
   renderCaseBanner();
   state.objectHighlight = null;
+  state.whereChosen = false;
   renderObjects();
   renderWhereCard();
   renderGroups();
@@ -871,9 +874,14 @@ function renderDownloadStatus() {
 // Lenses for the "Where it's similar" tab, grouped by the question they answer.
 const LENS_GROUPS = [
   {
+    title: 'Marked up',
+    note: 'Circles, numbers and arrows that point at what changed and what was carried over.',
+    ids: ['diff', 'regions', 'evidence'],
+  },
+  {
     title: 'Same content?',
     note: 'Learned features. They survive crops, flips and redrawing — and also respond to mere resemblance.',
-    ids: ['parts', 'heat', 'evidence'],
+    ids: ['parts', 'heat'],
   },
   {
     title: 'Same details?',
@@ -888,6 +896,19 @@ const LENS_GROUPS = [
 ];
 
 const VIEWS = {
+  diff: {
+    label: 'Differences',
+    need: (v) => v.annotations?.aligned,
+    what: 'B is laid over A exactly: first with the keypoint transform, then with a fine, local alignment that undoes small shifts from scanning or resizing. Every spot where nothing nearby in the other image has the same colour is circled, and each number marks the same place in both images.',
+    means: 'This is “spot the difference”: what was added, removed or changed between two versions of one picture. A handful of small changes means B is essentially A; the copyright question is then whether those changes add anything of substance.',
+  },
+  regions: {
+    label: 'Matching regions',
+    need: (v) => v.annotations?.regions?.length,
+    what: 'DINOv2 patches of A and B that are each other’s best match are grouped into regions that move together. Each region is circled in its own colour in both images and joined by an arrow from A to B, labelled with what the object detector sees there and how alike the patches are on average.',
+    means: 'Arrows between the same figures, objects or arrangement show which elements B shares with A — the “what was taken?” question — even when B was redrawn, restaged or rearranged. Two works can also share mere subject matter (two different cats match too), so ask whether the match lies in protectable expression.',
+    ref: { label: 'Amir et al., Deep ViT Features as Dense Visual Descriptors (2021)', url: 'https://arxiv.org/abs/2112.05814' },
+  },
   parts: {
     label: 'Matching parts',
     need: (v) => v.dino,
@@ -905,7 +926,7 @@ const VIEWS = {
   evidence: {
     label: 'Copy evidence (SSCD)',
     need: (v) => v.sscd,
-    what: 'SSCD’s copy score is one number, but it can be split exactly into contributions from each region of the image (plus a constant close to zero). This map shows that split: bright regions supplied the evidence for the score. The overlay fades when the score itself is low.',
+    what: 'SSCD’s copy score is one number, but it can be split exactly into contributions from each region of the image (plus a constant close to zero). The heat map shows that split and the circles mark its peaks: the regions that supplied most of the evidence for the score. Everything fades when the score itself is low.',
     means: 'This is what the copy detector “looked at”. Evidence on the subject means SSCD is matching the reproduced content; evidence on a watermark, caption or border means the score may reflect that shared element more than the work itself.',
     ref: { label: 'Stylianou, Souvenir & Pless, Visualizing Deep Similarity Networks (2019)', url: 'https://arxiv.org/abs/1901.00536' },
   },
@@ -944,7 +965,7 @@ function renderViewModes() {
   const v = state.visuals || {};
   const ok = (id) => (id === 'side' ? !!(state.slots.a && state.slots.b) : !!VIEWS[id].need(v));
   const available = Object.keys(VIEWS).filter(ok);
-  if (!state.viewChosen) state.view = ['parts', 'evidence', 'swipe'].find((id) => available.includes(id)) || 'side';
+  if (!state.viewChosen) state.view = defaultLens(v, available) || 'side';
   if (!available.includes(state.view)) state.view = available[0] || 'side';
   for (const g of LENS_GROUPS) {
     const ids = g.ids.filter(ok);
@@ -1074,10 +1095,134 @@ function drawParts(d, maxCssWidth, withHeat, withLines) {
   return p.canvas;
 }
 
+/** The most telling marked-up lens for these results. */
+function defaultLens(v, available) {
+  const ann = v?.annotations;
+  const prefer = [];
+  if (ann?.aligned && (ann.differences.length || ann.global)) prefer.push('diff');
+  if (ann?.regions?.length) prefer.push('regions');
+  if (ann?.aligned) prefer.push('diff');
+  prefer.push('parts', 'evidence', 'heat', 'swipe');
+  return prefer.find((id) => available.includes(id));
+}
+
+const ANN_LENSES = new Set(['diff', 'regions', 'evidence']);
+
+function evidenceUnderlay(p) {
+  const e = state.visuals.sscd;
+  const peak = (grid) => Math.max(1e-9, ...grid.values);
+  const strength = Math.max(0.15, Math.min(1, (e.score - 0.15) / 0.45));
+  heatOverlay(p.g, e.a, p.a, (x) => x / peak(e.a), strength);
+  heatOverlay(p.g, e.b, p.b, (x) => x / peak(e.b), strength);
+}
+
+/** Text under a marked-up lens. */
+function annotationNote(id) {
+  const v = state.visuals;
+  const ann = v.annotations;
+  if (id === 'diff') {
+    if (ann.global) return 'After alignment B differs from A almost everywhere (recoloured, filtered or redrawn), so there are no isolated spots to circle. Try the Matching regions lens.';
+    if (!ann.differences.length) return 'After alignment no part of B differs from A beyond tiny shifts: as far as the pixels go, B is a faithful copy of A.';
+    const n = ann.differences.length;
+    return `${n} difference${n === 1 ? '' : 's'} circled, largest first. Point at (or tap) a number to single it out.`;
+  }
+  if (id === 'regions') {
+    const n = ann.regions.length;
+    const whole = ann.regions[0] && ann.regions[0].share >= 0.6;
+    return `${whole ? 'Nearly all of A reappears in B. ' : ''}${n} matching region${n === 1 ? '' : 's'}, joined A → B; the percentage is how alike their patches are. Point at (or tap) one to follow its arrow.`;
+  }
+  const e = v.sscd;
+  return `SSCD score ${e.score.toFixed(3)}: the heat adds up to this score, and the circles mark where most of it comes from.${e.score < 0.5 ? ' Everything is faint because SSCD finds little copy evidence overall.' : ''}`;
+}
+
+/** Where a box sits in its image, in words ("top left", "centre"). */
+function placeName(box, img) {
+  const x = (box[0] + box[2]) / 2 / img.w;
+  const y = (box[1] + box[3]) / 2 / img.h;
+  const v = y < 1 / 3 ? 'top' : y > 2 / 3 ? 'bottom' : '';
+  const h = x < 1 / 3 ? 'left' : x > 2 / 3 ? 'right' : '';
+  return [v, h].filter(Boolean).join(' ') || 'centre';
+}
+
+/** A marked-up view: annotated canvas plus a numbered list of close-ups. */
+function annotatedView(id, cssWidth) {
+  const v = state.visuals;
+  const ann = v.annotations || { differences: [], regions: [] };
+  const A = state.slots.a.bitmap;
+  const B = state.slots.b.bitmap;
+  const holder = el('div', { class: 'ann-stage' });
+  let focus = null;
+  let stageNow = null;
+  const items =
+    id === 'diff'
+      ? ann.differences.map((d) => {
+          const kind = AV.KIND_TEXT[d.kind] || 'changed';
+          return {
+            n: d.n,
+            color: AV.RED,
+            title: kind[0].toUpperCase() + kind.slice(1),
+            sub: [d.label, placeName(d.a, state.slots.a)].filter(Boolean).join(' · '),
+            thumbs: d.thumbs,
+          };
+        })
+      : id === 'regions'
+        ? ann.regions.map((r, k) => ({
+            n: r.n,
+            color: AV.PALETTE[k % AV.PALETTE.length],
+            title: AV.regionName(r),
+            sub: `${Math.round(r.sim * 100)}% alike · ${Math.max(1, Math.round(r.share * 100))}% of A`,
+            thumbs: r.thumbs,
+          }))
+        : [];
+  const list = el(
+    'ol',
+    { class: 'ann-list' },
+    items.map((it) =>
+      el(
+        'li',
+        {
+          'data-n': it.n,
+          tabindex: '0',
+          onmouseenter: () => setFocus(it.n),
+          onmouseleave: () => setFocus(null),
+          onfocus: () => setFocus(it.n),
+          onblur: () => setFocus(null),
+          onclick: () => setFocus(focus === it.n ? null : it.n),
+        },
+        el('span', { class: 'ann-num', style: `background:${it.color}` }, String(it.n)),
+        el('span', { class: 'ann-thumbs' }, it.thumbs?.a ? canvasFrom(it.thumbs.a) : '', el('span', { class: 'ann-to', style: `color:${it.color}` }, '→'), it.thumbs?.b ? canvasFrom(it.thumbs.b) : ''),
+        el('span', { class: 'ann-text' }, el('strong', {}, it.title), el('span', {}, it.sub)),
+      ),
+    ),
+  );
+  const draw = () => {
+    if (id === 'diff') stageNow = AV.drawDifferences(A, B, ann, { cssWidth, focus });
+    else if (id === 'regions') stageNow = AV.drawRegions(A, B, ann, { cssWidth, focus });
+    else stageNow = AV.drawEvidence(A, B, ann?.peaks ? ann : { peaks: { score: v.sscd.score, a: [], b: [] } }, { cssWidth, underlay: evidenceUnderlay });
+    stageNow.canvas.onclick = (e) => {
+      const n = AV.hitTest(stageNow, e);
+      setFocus(n === focus ? null : n);
+      if (n) list.querySelector(`[data-n="${n}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    };
+    if (stageNow.hits.length) stageNow.canvas.style.cursor = 'pointer';
+    holder.replaceChildren(stageNow.canvas);
+    for (const li of list.children) li.classList.toggle('on', Number(li.dataset.n) === focus);
+  };
+  function setFocus(n) {
+    if (n === focus) return;
+    focus = n;
+    draw();
+  }
+  draw();
+  return el('div', { class: `ann-view ann-${id}` }, holder, items.length ? list : '', id === 'evidence' ? el('div', { class: 'colorbar' }, 'no evidence', el('i'), 'most evidence') : '');
+}
+
 const WHERE_LENSES = [
-  { id: 'parts', label: 'Matching parts', short: 'Same-coloured dots mark parts of A and B that DINOv2 finds most alike (mutual best matches).' },
-  { id: 'evidence', label: 'Copy evidence', short: 'Where SSCD’s copy score comes from: the coloured regions add up to the score.' },
-  { id: 'heat', label: 'Heat map', short: 'How closely every region of each image has a counterpart in the other.' },
+  { id: 'diff', label: 'Differences', need: (v) => v.annotations?.aligned },
+  { id: 'regions', label: 'Matching regions', need: (v) => v.annotations?.regions?.length },
+  { id: 'evidence', label: 'Copy evidence', need: (v) => v.sscd && v.annotations?.peaks },
+  { id: 'parts', label: 'Matching parts', need: (v) => v.dino, short: 'Same-coloured dots mark parts of A and B that DINOv2 finds most alike (mutual best matches).' },
+  { id: 'heat', label: 'Heat map', need: (v) => v.dino, short: 'How closely every region of each image has a counterpart in the other.' },
 ];
 
 /** Compact "where" panel at the top of the Detection tab. */
@@ -1087,20 +1232,21 @@ function renderWhereCard() {
   box.innerHTML = '';
   const v = state.visuals;
   box.append(el('div', { class: 'where-head' }, el('h3', {}, 'Where the similarity comes from'), el('button', { type: 'button', class: 'linklike', onclick: () => $('#whereBtn').click() }, 'More views →')));
-  if (!v || !(v.dino || v.sscd)) {
+  const lenses = v ? WHERE_LENSES.filter((l) => l.need(v)) : [];
+  if (!lenses.length) {
     box.append(
       el(
         'p',
         { class: 'muted small' },
         state.scanning
-          ? 'Annotated views appear here when the scan finishes.'
+          ? 'Marked-up views appear here when the scan finishes.'
           : 'Turn on the DINOv2 or SSCD models in Settings to see where the similarity comes from.',
       ),
     );
     return;
   }
-  const lenses = WHERE_LENSES.filter((l) => (l.id === 'evidence' ? v.sscd : v.dino));
-  if (!lenses.some((l) => l.id === state.whereLens)) state.whereLens = lenses[0].id;
+  const ids = lenses.map((l) => l.id);
+  if (!state.whereChosen || !ids.includes(state.whereLens)) state.whereLens = defaultLens(v, ids) || ids[0];
   const lens = lenses.find((l) => l.id === state.whereLens);
   box.append(
     el(
@@ -1115,6 +1261,7 @@ function renderWhereCard() {
             'aria-pressed': String(l.id === state.whereLens),
             onclick: () => {
               state.whereLens = l.id;
+              state.whereChosen = true;
               renderWhereCard();
             },
           },
@@ -1123,19 +1270,18 @@ function renderWhereCard() {
       ),
     ),
   );
-  const width = Math.max(320, box.clientWidth - 36);
+  const width = Math.max(300, box.clientWidth - 36);
+  if (ANN_LENSES.has(lens.id)) {
+    box.append(annotatedView(lens.id, width), el('p', { class: 'where-note' }, annotationNote(lens.id)));
+    return;
+  }
   let canvas;
   let note = lens.short;
   if (lens.id === 'parts') {
     canvas = drawParts(v.dino, width, false, false);
     note += ` ${Math.round(v.dino.mutualShare * 100)}% of A’s patches have a mutual match in B.`;
-  } else if (lens.id === 'heat') {
-    canvas = drawHeatPair(v.dino.a, v.dino.b, dinoV, 1, width);
   } else {
-    const e = v.sscd;
-    const peak = (grid) => Math.max(1e-9, ...grid.values);
-    canvas = drawHeatPair(e.a, e.b, { a: (x) => x / peak(e.a), b: (x) => x / peak(e.b) }, Math.max(0.15, Math.min(1, (e.score - 0.15) / 0.45)), width);
-    note += ` Score ${e.score.toFixed(3)}${e.score < 0.5 ? ' — faint, because SSCD finds little copy evidence.' : '.'}`;
+    canvas = drawHeatPair(v.dino.a, v.dino.b, dinoV, 1, width);
   }
   box.append(el('div', { class: 'lens-view' }, canvas), el('p', { class: 'where-note' }, note));
 }
@@ -1214,13 +1360,9 @@ function renderVisual() {
     caption.textContent = 'Colour shows each patch’s best-match cosine similarity in the other image, from 0.35 (no colour) to 0.85 and above (brightest).';
     return;
   }
-  if (state.view === 'evidence') {
-    const e = v.sscd;
-    const peak = (grid) => Math.max(1e-9, ...grid.values);
-    const toV = { a: (x) => x / peak(e.a), b: (x) => x / peak(e.b) };
-    const strength = Math.max(0.15, Math.min(1, (e.score - 0.15) / 0.45));
-    viewer.append(el('div', { class: 'lens-view' }, drawHeatPair(e.a, e.b, toV, strength, fullWidth), colorbar('no evidence', 'most evidence')));
-    caption.textContent = `SSCD score ${e.score.toFixed(3)}: each map’s cells add up to this score (positive contributions in colour, on a ${e.a.gw}×${e.a.gh} and ${e.b.gw}×${e.b.gh} grid).${e.score < 0.5 ? ' The overlay is faint because SSCD finds little copy evidence overall.' : ''}`;
+  if (ANN_LENSES.has(state.view)) {
+    viewer.append(el('div', { class: 'lens-view' }, annotatedView(state.view, fullWidth)));
+    caption.textContent = annotationNote(state.view);
     return;
   }
   if (state.view === 'swipe') {
@@ -1881,18 +2023,26 @@ async function loadCaseManifest() {
 function renderCases() {
   const root = $('#caseGroups');
   root.innerHTML = '';
+  // only cases whose works are published here; the rest stay listed in cases.js
+  const ready = CASES.filter((c) => state.caseImages[c.id]);
   for (const g of CASE_GROUPS) {
-    const cases = CASES.filter((c) => c.group === g.id);
+    const cases = ready.filter((c) => c.group === g.id);
+    if (!cases.length) continue;
     root.append(
       el(
         'section',
         { class: 'case-group' },
-        el('div', { class: 'case-group-head' }, el('h3', {}, g.title), el('span', { class: 'muted small' }, `${cases.length} cases`)),
+        el('div', { class: 'case-group-head' }, el('h3', {}, g.title), el('span', { class: 'muted small' }, `${cases.length} case${cases.length === 1 ? '' : 's'}`)),
         el('p', { class: 'case-group-blurb' }, g.blurb),
         el('div', { class: 'case-grid' }, cases.map(caseCard)),
       ),
     );
   }
+  $('#cases').hidden = !ready.length;
+  $('.cases-pointer').hidden = !ready.length;
+  for (const a of document.querySelectorAll('.topbar a[href="#cases"]')) a.hidden = !ready.length;
+  const link = $('#casesLink');
+  link.replaceChildren(...(ready.length === 1 ? [el('i', {}, ready[0].name), ' ↓'] : [`${ready.length} image cases ↓`]));
 }
 
 function caseCard(c) {
