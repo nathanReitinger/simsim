@@ -2,6 +2,7 @@ import { ENGINES, ENGINE_BY_ID, GROUPS, VERDICT_LABEL } from './engines.js';
 import { MODELS } from './lib/neural.js';
 import { ModelStore } from './lib/modelstore.js';
 import { applyTransform, DEFAULTS, PRESETS, describe } from './transform.js';
+import { CASES, CASE_GROUPS } from './cases.js';
 
 const ROOT = new URL('../', import.meta.url);
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -76,6 +77,8 @@ const state = {
   downloads: {},
   view: 'swipe',
   viewChosen: false,
+  case: null, // copyright case whose works are loaded in A and B
+  caseImages: {}, // case id -> image paths, from assets/cases/manifest.json
   openEngines: new Set(),
   warmed: false,
 };
@@ -211,7 +214,7 @@ async function decodeImage(file) {
   }
 }
 
-async function setSlot(slot, file) {
+async function setSlot(slot, file, { keepCase = false } = {}) {
   if (!file) return;
   if (!(file.type || '').startsWith('image/') && !IMAGE_EXT.test(file.name || '')) {
     toast(`“${file.name}” does not look like an image.`);
@@ -230,12 +233,14 @@ async function setSlot(slot, file) {
     prev.bitmap.close?.();
   }
   state.slots[slot] = { file, bitmap, url: URL.createObjectURL(file), w: bitmap.width, h: bitmap.height };
+  if (!keepCase) state.case = null;
   renderSlot(slot);
   updateButtons();
   warm();
 }
 
 function clearSlot(slot) {
+  state.case = null;
   const prev = state.slots[slot];
   if (prev) {
     URL.revokeObjectURL(prev.url);
@@ -328,6 +333,7 @@ function setupDrops() {
     else fillSlots(files);
   });
   $('#swapBtn').addEventListener('click', () => {
+    state.case = null; // A is no longer the plaintiff's work
     [state.slots.a, state.slots.b] = [state.slots.b, state.slots.a];
     renderSlot('a');
     renderSlot('b');
@@ -360,6 +366,7 @@ async function startScan() {
   $('#results').hidden = false;
   const s = $('.summary');
   delete s.dataset.tone;
+  renderCaseBanner();
   renderGroups();
   renderSpotlight();
   renderViewModes();
@@ -1240,6 +1247,126 @@ async function loadSample(s) {
   }
 }
 
+// ------------------------------------------------------------------ copyright cases
+
+const OUTCOME = {
+  liable: { short: 'Infringement', long: 'Court: infringement' },
+  fairuse: { short: 'Fair use', long: 'Court: fair use' },
+  nosim: { short: 'No infringement', long: 'Court: no infringement' },
+};
+
+const caseImageUrl = (path) => new URL(`assets/cases/${path}`, ROOT).href;
+
+async function loadCaseManifest() {
+  try {
+    const res = await fetch(new URL('assets/cases/manifest.json', ROOT));
+    if (res.ok) {
+      for (const [id, entry] of Object.entries(await res.json())) {
+        if (!id.startsWith('_') && entry.a && entry.b) state.caseImages[id] = entry;
+      }
+    }
+  } catch {
+    // no case images published
+  }
+  renderCases();
+}
+
+function renderCases() {
+  const root = $('#caseGroups');
+  root.innerHTML = '';
+  for (const g of CASE_GROUPS) {
+    const cases = CASES.filter((c) => c.group === g.id);
+    root.append(
+      el(
+        'section',
+        { class: 'case-group' },
+        el('div', { class: 'case-group-head' }, el('h3', {}, g.title), el('span', { class: 'muted small' }, `${cases.length} cases`)),
+        el('p', { class: 'case-group-blurb' }, g.blurb),
+        el('div', { class: 'case-grid' }, cases.map(caseCard)),
+      ),
+    );
+  }
+}
+
+function caseCard(c) {
+  const imgs = state.caseImages[c.id];
+  const thumb = (side) =>
+    imgs
+      ? el('img', { src: caseImageUrl(imgs[side]), alt: imgs[`${side}Label`] || `Image ${side.toUpperCase()}`, loading: 'lazy' })
+      : el('div', { class: 'case-thumb-empty' }, side.toUpperCase());
+  return el(
+    'article',
+    { class: 'case-card' },
+    el('div', { class: 'case-thumbs' }, thumb('a'), el('span', { class: 'case-arrow', 'aria-hidden': 'true' }, '→'), thumb('b')),
+    el(
+      'div',
+      { class: 'case-body' },
+      el('span', { class: 'case-outcome', 'data-group': c.group }, OUTCOME[c.group].short),
+      el('h4', {}, el('i', {}, c.name)),
+      el('div', { class: 'case-cite' }, c.cite),
+      el('p', { class: 'case-pairing' }, c.pairing),
+      c.note ? el('p', { class: 'case-note' }, c.note) : null,
+      c.caution ? el('p', { class: 'case-caution' }, c.caution) : null,
+    ),
+    el(
+      'div',
+      { class: 'case-foot' },
+      imgs
+        ? el('button', { type: 'button', class: 'btn small', onclick: () => loadCase(c) }, 'Compare the works')
+        : el('span', { class: 'muted small' }, 'Images not added yet'),
+    ),
+  );
+}
+
+async function fetchCaseFile(c, side) {
+  const path = state.caseImages[c.id][side];
+  const res = await fetch(caseImageUrl(path));
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
+  const blob = await res.blob();
+  const ext = (path.match(/\.[a-z0-9]+$/i) || ['.jpg'])[0];
+  const role = side === 'a' ? 'plaintiff' : 'defendant';
+  return new File([blob], `${c.id}-${role}${ext}`, { type: blob.type || 'image/jpeg', lastModified: 0 });
+}
+
+async function loadCase(c) {
+  try {
+    const [fa, fb] = await Promise.all([fetchCaseFile(c, 'a'), fetchCaseFile(c, 'b')]);
+    await setSlot('a', fa, { keepCase: true });
+    await setSlot('b', fb, { keepCase: true });
+    state.case = c;
+    startScan();
+  } catch (err) {
+    console.error(err);
+    toast('Could not load the images for this case.');
+  }
+}
+
+function renderCaseBanner() {
+  const box = $('#caseBanner');
+  const c = state.case;
+  box.hidden = !c;
+  box.innerHTML = '';
+  if (!c) return;
+  const imgs = state.caseImages[c.id] || {};
+  const labels = imgs.aLabel || imgs.bLabel ? el('p', { class: 'case-banner-labels' }, el('b', {}, 'A '), imgs.aLabel || 'plaintiff’s work', el('b', {}, ' · B '), imgs.bLabel || 'defendant’s work') : null;
+  box.append(
+    el(
+      'div',
+      { class: 'case-banner-top' },
+      el('span', { class: 'case-outcome', 'data-group': c.group }, OUTCOME[c.group].long),
+      el('span', { class: 'case-banner-name' }, el('i', {}, c.name), `, ${c.cite}`),
+    ),
+    el('p', { class: 'case-banner-pairing' }, c.pairing, c.note ? ` — ${c.note}` : ''),
+    labels,
+    c.caution ? el('p', { class: 'case-caution' }, c.caution) : null,
+    el(
+      'p',
+      { class: 'muted small' },
+      'Do the tests below line up with the court? Similarity scores measure resemblance between pixels or learned features; what counts as protectable expression, how much was taken and whether the use was fair are questions they do not measure.',
+    ),
+  );
+}
+
 // ------------------------------------------------------------------ catalogue
 
 function renderCatalogue() {
@@ -1312,6 +1439,8 @@ function init() {
   setupTabs();
   buildLab();
   renderCatalogue();
+  renderCases();
+  loadCaseManifest();
   for (const s of SAMPLES) $('#samples').append(el('button', { type: 'button', class: 'pill', onclick: () => loadSample(s) }, s.label));
   $('#scanBtn').addEventListener('click', startScan);
   $('#labBtn').addEventListener('click', openLab);
