@@ -47,8 +47,9 @@ console.
 
 ## Publishing changes
 
-GitHub Pages serves this repository straight from the `main` branch (Settings → Pages → *Deploy from a branch*,
-`main`, `/ (root)`). Every push to `main` republishes the site, usually within a minute or two:
+The workflow in [`.github/workflows/pages.yml`](.github/workflows/pages.yml) publishes the site to GitHub Pages
+(Settings → Pages → Source: *GitHub Actions*). Every push to `main` republishes it, usually within a minute or
+two:
 
 ```bash
 git add -A
@@ -57,7 +58,8 @@ git push
 ```
 
 You can also edit files directly on github.com; committing there republishes the site the same way. The
-**Actions** tab shows each deployment ("pages build and deployment").
+**Actions** tab shows each deployment ("Deploy to GitHub Pages") and has a **Run workflow** button to redeploy
+without a new commit. When GitHub's runners are busy, a deployment waits in the queue rather than failing.
 
 Two caches to know about:
 
