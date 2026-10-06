@@ -2695,3 +2695,24 @@ details.group[open] .group-head {
 .sw-similar {
   background: rgba(245, 158, 11, 0.75);
 }
+
+.cover-controls {
+  align-items: center;
+}
+
+.cover-sizes {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.cover-readout {
+  margin: 0;
+  max-width: 760px;
+  font-size: 13.5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.cover-readout strong {
+  color: var(--text);
+}

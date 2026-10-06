@@ -137,8 +137,26 @@ async function prefetchModels() {
   }
 }
 
+const rescoreWaiters = new Map();
+let rescoreSeq = 0;
+
+/** SSCD score of two (painted-over) images, computed in the worker. */
+function rescore(a, b) {
+  const id = ++rescoreSeq;
+  return new Promise((resolve, reject) => {
+    rescoreWaiters.set(id, { resolve, reject });
+    getWorker().postMessage({ type: 'rescore', id, a, b }, [a.data.buffer, b.data.buffer]);
+  });
+}
+
 function onWorkerMessage(e) {
   const m = e.data;
+  if (m.type === 'rescored') {
+    const w = rescoreWaiters.get(m.id);
+    rescoreWaiters.delete(m.id);
+    if (w) (m.error ? w.reject(new Error(m.error)) : w.resolve(m.value));
+    return;
+  }
   if (m.type === 'need-model') {
     store
       .get(m.key)
@@ -759,9 +777,18 @@ function similarityLevel(R, V) {
   const is = (id, ...vs) => vs.includes(R[id]?.verdict);
   const sscd = val('sscd');
   if (is('sha256', 'identical')) return { id: 'file', why: 'the SHA-256 digests are identical' };
+  if (is('payload', 'identical')) return { id: 'pixels', why: 'the compressed image data is byte-identical; only the metadata differs' };
   if (is('pixels', 'identical')) return { id: 'pixels', why: 'every decoded pixel is identical' };
   if ((is('pdq', 'match') || (is('phash', 'match') && is('dhash', 'match'))) && (is('msssim', 'match') || is('ssim', 'match'))) {
     return { id: 'resaved', why: 'the perceptual hashes match and the pixels line up' };
+  }
+  // SSCD after undoing a crop, rotation or mirror: a copy of the whole, or of a part?
+  const aligned = val('sscdAligned');
+  const ov = V?.annotations?.overlap;
+  if (aligned !== null && aligned >= 0.75 && (sscd === null || aligned > sscd + 0.05)) {
+    const cover = ov ? Math.min(ov.coverA, ov.coverB) : 1;
+    if (cover >= 0.6) return { id: 'edited', why: `once B is lined up with A, SSCD scores ${aligned.toFixed(2)}` };
+    return { id: 'part', why: `SSCD scores ${aligned.toFixed(2)} on the region the two share (${Math.round(100 * (ov?.coverA ?? 1))}% of A)` };
   }
   if (sscd !== null && sscd >= 0.75) return { id: 'edited', why: `SSCD scores ${sscd.toFixed(2)}, above the 0.75 copy threshold` };
   if (is('pdqDihedral', 'match')) return { id: 'edited', why: 'PDQ matches once B is rotated or mirrored' };
@@ -893,7 +920,7 @@ const LENS_GROUPS = [
   {
     title: 'Marked up',
     note: 'Circles, numbers and arrows that point at what changed and what was carried over.',
-    ids: ['diff', 'evidence', 'regions', 'two', 'probe'],
+    ids: ['diff', 'evidence', 'regions', 'two', 'probe', 'cover'],
   },
   {
     title: 'Same content?',
@@ -953,6 +980,13 @@ const VIEWS = {
     what: 'Two models look at every region. The copy detector (SSCD) says where its evidence for “B is a copy of A” comes from; the look-alike model (DINOv2) says whether the region has a close counterpart in the other image. Red marks regions where both agree; amber marks regions that look alike but carry no copy evidence.',
     means: 'This is the idea/expression line in pictures. Amber regions share a subject, pose or composition — the kind of similarity two independent photographers can produce, and which copyright usually leaves free. Red regions are where the copy detector sees reproduced expression. The thresholds are heuristic: treat the map as a prompt for the filtration step, not as its answer.',
     ref: { label: 'Somepalli et al., Diffusion Art or Digital Forgery? (CVPR 2023)', url: 'https://arxiv.org/abs/2212.03860' },
+  },
+  cover: {
+    label: 'Cover-up test',
+    need: (v) => v.sscd?.pairs,
+    what: 'Paint over parts of either image; the painted areas are filled with the image’s average colour and SSCD scores the covered pair again. Beside the real score you see the prediction from the evidence split: what the score would be if the covered locations simply stopped contributing.',
+    means: 'This is filtration by hand. Courts first set aside what is not protected — ideas, poses, stock elements, scènes à faire — and only then compare what is left. Cover the unprotected parts and see whether any copy evidence survives. When the prediction and the real score agree, the explanation is faithful for that cover-up; when they disagree, the network is using context around the covered area.',
+    ref: { label: 'Petsiuk et al., RISE: randomized input sampling for explanation (2018) — the deletion test', url: 'https://arxiv.org/abs/1806.07421' },
   },
   probe: {
     label: 'Point and compare',
@@ -1139,7 +1173,7 @@ function defaultLens(v, available) {
   return prefer.find((id) => available.includes(id));
 }
 
-const ANN_LENSES = new Set(['diff', 'regions', 'evidence', 'probe', 'two']);
+const ANN_LENSES = new Set(['diff', 'regions', 'evidence', 'probe', 'two', 'cover']);
 
 function evidenceUnderlay(p) {
   const e = state.visuals.sscd;
@@ -1169,6 +1203,7 @@ function annotationNote(id) {
     return `${whole ? 'Nearly all of A reappears in B. ' : ''}${n} matching region${n === 1 ? '' : 's'}, joined A → B; the percentage is how alike their patches are.${hatched} Point at (or tap) a region to follow its arrow.`;
   }
   if (id === 'probe') return 'Point at any part of either image (or tap it). The other image lights up wherever something resembles that spot, and the arrow lands on the closest match. Click to pin a point.';
+  if (id === 'cover') return 'Filtration by hand: paint over what you think is unprotectable (a pose, a background, a stock element) in either image and see how much copy evidence is left.';
   if (id === 'two') return `Copy detector score ${v.sscd.score.toFixed(2)}${v.sscd.score < 0.4 ? ' — too low for any region to count as copied, so every match shows as “looks alike only”' : ''}. Red: copied; amber: looks alike only; clear: no counterpart.`;
   const e = v.sscd;
   const n = e.links?.links.length || 0;
@@ -1350,9 +1385,240 @@ function probeView(cssWidth) {
   return el('div', { class: 'ann-view ann-probe' }, pills, holder, readout);
 }
 
+/**
+ * The cover-up test: paint over parts of either image and SSCD re-scores the
+ * covered images. The first-order prediction from the pairwise split is
+ * shown beside the real score, so students can see where the explanation
+ * holds and where the network is more than the sum of its parts.
+ */
+function coverView(cssWidth) {
+  const v = state.visuals;
+  const bms = { a: state.slots.a.bitmap, b: state.slots.b.bitmap };
+  const MAX = 640;
+  const size = (bm) => {
+    const s = Math.min(1, MAX / Math.max(bm.width, bm.height));
+    return [Math.max(8, Math.round(bm.width * s)), Math.max(8, Math.round(bm.height * s))];
+  };
+  const masks = {};
+  for (const side of ['a', 'b']) {
+    const [w, h] = size(bms[side]);
+    masks[side] = el('canvas', { width: w, height: h });
+  }
+  // mean colour of each image: what covered areas are filled with
+  const mean = {};
+  for (const side of ['a', 'b']) {
+    const c = el('canvas', { width: 1, height: 1 });
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(bms[side], 0, 0, 1, 1);
+    const d = g.getImageData(0, 0, 1, 1).data;
+    mean[side] = `rgb(${d[0]},${d[1]},${d[2]})`;
+  }
+  let brush = 0.07;
+  const undo = [];
+  const p = AV.stage(bms.a, bms.b, { cssWidth, gap: 34 });
+  const holder = el('div', { class: 'ann-stage' }, p.canvas);
+  p.canvas.style.cursor = 'crosshair';
+  p.canvas.style.touchAction = 'none';
+  const readout = el('p', { class: 'cover-readout' }, `SSCD on the uncovered images: ${v.sscd.score.toFixed(3)}. Paint over any part of either image.`);
+  const redraw = () => {
+    p.paint();
+    for (const side of ['a', 'b']) {
+      const r = p[side];
+      const t = el('canvas', { width: masks[side].width, height: masks[side].height });
+      const tg = t.getContext('2d');
+      tg.drawImage(masks[side], 0, 0);
+      tg.globalCompositeOperation = 'source-in';
+      tg.fillStyle = 'rgba(239, 35, 60, 0.6)';
+      tg.fillRect(0, 0, t.width, t.height);
+      p.g.drawImage(t, r.x, r.y, r.w, r.h);
+    }
+  };
+  const at = (e) => {
+    const rect = p.canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * p.canvas.width;
+    const y = ((e.clientY - rect.top) / rect.height) * p.canvas.height;
+    for (const side of ['a', 'b']) {
+      const r = p[side];
+      if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return { side, fx: (x - r.x) / r.w, fy: (y - r.y) / r.h };
+    }
+    return null;
+  };
+  let stroke = null;
+  const dab = (pt) => {
+    const m = masks[pt.side];
+    const g = m.getContext('2d');
+    const rad = brush * Math.max(m.width, m.height);
+    const x = pt.fx * m.width;
+    const y = pt.fy * m.height;
+    g.fillStyle = '#000';
+    g.strokeStyle = '#000';
+    g.lineCap = 'round';
+    g.lineWidth = 2 * rad;
+    if (stroke?.last && stroke.last.side === pt.side) {
+      g.beginPath();
+      g.moveTo(stroke.last.fx * m.width, stroke.last.fy * m.height);
+      g.lineTo(x, y);
+      g.stroke();
+    }
+    g.beginPath();
+    g.arc(x, y, rad, 0, Math.PI * 2);
+    g.fill();
+    stroke.last = pt;
+  };
+  const snapshot = () => undo.push(Object.fromEntries(['a', 'b'].map((sd) => [sd, masks[sd].getContext('2d').getImageData(0, 0, masks[sd].width, masks[sd].height)])));
+  p.canvas.onpointerdown = (e) => {
+    const pt = at(e);
+    if (!pt) return;
+    p.canvas.setPointerCapture(e.pointerId);
+    snapshot();
+    stroke = { last: null };
+    dab(pt);
+    redraw();
+  };
+  p.canvas.onpointermove = (e) => {
+    if (!stroke) return;
+    const pt = at(e);
+    if (pt) {
+      dab(pt);
+      redraw();
+    }
+  };
+  p.canvas.onpointerup = () => {
+    if (!stroke) return;
+    stroke = null;
+    score();
+  };
+  // fraction of each SSCD grid cell that is covered
+  const coverage = (side) => {
+    const grid = v.sscd[side];
+    const c = el('canvas', { width: grid.gw, height: grid.gh });
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(masks[side], 0, 0, grid.gw, grid.gh);
+    const d = g.getImageData(0, 0, grid.gw, grid.gh).data;
+    return Float32Array.from({ length: grid.gw * grid.gh }, (_, i) => d[i * 4 + 3] / 255);
+  };
+  const predicted = () => {
+    const R = v.sscd.pairs;
+    if (!R) return null;
+    const wa = coverage('a');
+    const wb = coverage('b');
+    const nA = wa.length;
+    const nB = wb.length;
+    let removed = 0;
+    for (let l = 0; l < nA; l++) {
+      for (let m = 0; m < nB; m++) {
+        const keep = (1 - wa[l]) * (1 - wb[m]);
+        removed += (1 - keep) * R[l * nB + m];
+      }
+    }
+    return v.sscd.score - removed;
+  };
+  let seq = 0;
+  async function score() {
+    const my = ++seq;
+    const covered = ['a', 'b'].some((sd) => coverage(sd).some((x) => x > 0.01));
+    if (!covered) {
+      readout.textContent = `SSCD on the uncovered images: ${v.sscd.score.toFixed(3)}. Paint over any part of either image.`;
+      return;
+    }
+    readout.textContent = 'Re-scoring…';
+    const image = (side) => {
+      const m = masks[side];
+      const c = el('canvas', { width: m.width, height: m.height });
+      const g = c.getContext('2d', { willReadFrequently: true });
+      g.drawImage(bms[side], 0, 0, m.width, m.height);
+      const t = el('canvas', { width: m.width, height: m.height });
+      const tg = t.getContext('2d');
+      tg.drawImage(m, 0, 0);
+      tg.globalCompositeOperation = 'source-in';
+      tg.fillStyle = mean[side];
+      tg.fillRect(0, 0, t.width, t.height);
+      g.drawImage(t, 0, 0);
+      return { w: m.width, h: m.height, data: g.getImageData(0, 0, m.width, m.height).data };
+    };
+    try {
+      const value = await rescore(image('a'), image('b'));
+      if (my !== seq) return;
+      const pred = predicted();
+      const drop = v.sscd.score - value;
+      readout.replaceChildren(
+        el('strong', {}, `SSCD with your cover-ups: ${value.toFixed(3)}`),
+        ` (uncovered ${v.sscd.score.toFixed(3)}, ${drop >= 0 ? 'down' : 'up'} ${Math.abs(drop).toFixed(3)}). `,
+        pred === null ? '' : `The evidence split predicted ${pred.toFixed(3)}${Math.abs(pred - value) < 0.05 ? ' — close: the covered parts carried that much of the score.' : ' — the network reacts to more than the sum of the parts here (covering changes the features around the covered area too).'}`,
+        value < 0.5 && v.sscd.score >= 0.5 ? ' Below 0.5, SSCD no longer treats B as a copy.' : '',
+      );
+    } catch (err) {
+      readout.textContent = `Could not re-score: ${err.message}`;
+    }
+  }
+  const btn = (label, fn, extra = {}) => el('button', { type: 'button', class: 'pill', onclick: fn, ...extra }, label);
+  const sizes = el(
+    'span',
+    { class: 'cover-sizes' },
+    [
+      ['S', 0.035],
+      ['M', 0.07],
+      ['L', 0.13],
+    ].map(([label, val]) =>
+      btn(
+        label,
+        (e) => {
+          brush = val;
+          for (const b of e.currentTarget.parentElement.children) b.setAttribute('aria-pressed', String(b === e.currentTarget));
+        },
+        { 'aria-pressed': String(val === brush), title: `Brush ${label}` },
+      ),
+    ),
+  );
+  const coverTop = () => {
+    const L = v.sscd.links?.links?.[0];
+    if (!L) return;
+    snapshot();
+    for (const [side, cells] of [
+      ['a', L.a],
+      ['b', L.b],
+    ]) {
+      const grid = v.sscd[side];
+      const m = masks[side];
+      const g = m.getContext('2d');
+      g.fillStyle = '#000';
+      const cw = m.width / grid.gw;
+      const ch = m.height / grid.gh;
+      for (const i of cells) g.fillRect((i % grid.gw) * cw - 1, Math.floor(i / grid.gw) * ch - 1, cw + 2, ch + 2);
+    }
+    redraw();
+    score();
+  };
+  const controls = el(
+    'div',
+    { class: 'lens-pills probe-pills cover-controls' },
+    el('span', { class: 'muted small' }, 'Brush'),
+    sizes,
+    btn('Undo', () => {
+      const last = undo.pop();
+      if (!last) return;
+      for (const sd of ['a', 'b']) masks[sd].getContext('2d').putImageData(last[sd], 0, 0);
+      redraw();
+      score();
+    }),
+    btn('Clear', () => {
+      snapshot();
+      for (const sd of ['a', 'b']) masks[sd].getContext('2d').clearRect(0, 0, masks[sd].width, masks[sd].height);
+      redraw();
+      score();
+    }),
+    v.sscd.links?.links?.length ? btn('Cover the strongest evidence', coverTop) : '',
+  );
+  redraw();
+  return el('div', { class: 'ann-view ann-cover' }, controls, holder, readout);
+}
+
 /** A marked-up view: annotated canvas plus a numbered list of close-ups. */
 function annotatedView(id, cssWidth) {
   if (id === 'probe') return probeView(cssWidth);
+  if (id === 'cover') return coverView(cssWidth);
   if (id === 'two') return twoLensView(cssWidth);
   const v = state.visuals;
   const ann = v.annotations || { differences: [], regions: [] };
@@ -1511,6 +1777,7 @@ const WHERE_LENSES = [
   { id: 'regions', label: 'Matching regions', need: (v) => v.annotations?.regions?.length },
   { id: 'two', label: 'Copied or similar?', need: (v) => v.dino && v.sscd },
   { id: 'probe', label: 'Point and compare', need: (v) => v.dino?.featsA || v.sscd?.pairs },
+  { id: 'cover', label: 'Cover-up test', need: (v) => v.sscd?.pairs },
 ];
 
 /** Compact "where" panel at the top of the Detection tab. */

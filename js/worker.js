@@ -1278,5 +1278,13 @@ self.onmessage = (e) => {
     loadOpenCV().catch(() => {});
   } else if (msg.type === 'cancel') {
     currentScan = -1;
+  } else if (msg.type === 'rescore') {
+    // the cover-up test: SSCD on images with parts painted over
+    (async () => {
+      const [ort, s] = await Promise.all([loadOrt(), session('sscd')]);
+      const img = (x) => rgbaToRgb(x.data, x.w, x.h);
+      const value = N.cosine(await N.embed(ort, s, 'sscd', img(msg.a)), await N.embed(ort, s, 'sscd', img(msg.b)));
+      post({ type: 'rescored', id: msg.id, value });
+    })().catch((err) => post({ type: 'rescored', id: msg.id, error: String((err && err.message) || err) }));
   }
 };
