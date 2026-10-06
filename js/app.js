@@ -1443,8 +1443,6 @@ const WHERE_LENSES = [
   { id: 'evidence', label: 'Copy evidence', need: (v) => v.sscd?.links },
   { id: 'regions', label: 'Matching regions', need: (v) => v.annotations?.regions?.length },
   { id: 'probe', label: 'Point and compare', need: (v) => v.dino?.featsA || v.sscd?.pairs },
-  { id: 'parts', label: 'Matching parts', need: (v) => v.dino, short: 'Same-coloured dots mark parts of A and B that DINOv2 finds most alike (mutual best matches).' },
-  { id: 'heat', label: 'Heat map', need: (v) => v.dino, short: 'How closely every region of each image has a counterpart in the other.' },
 ];
 
 /** Compact "where" panel at the top of the Detection tab. */
@@ -1493,19 +1491,7 @@ function renderWhereCard() {
     ),
   );
   const width = Math.max(300, box.clientWidth - 36);
-  if (ANN_LENSES.has(lens.id)) {
-    box.append(annotatedView(lens.id, width), el('p', { class: 'where-note' }, annotationNote(lens.id)));
-    return;
-  }
-  let canvas;
-  let note = lens.short;
-  if (lens.id === 'parts') {
-    canvas = drawParts(v.dino, width, false, false);
-    note += ` ${Math.round(v.dino.mutualShare * 100)}% of A’s patches have a mutual match in B.`;
-  } else {
-    canvas = drawHeatPair(v.dino.a, v.dino.b, dinoV, 1, width);
-  }
-  box.append(el('div', { class: 'lens-view' }, canvas), el('p', { class: 'where-note' }, note));
+  box.append(annotatedView(lens.id, width), el('p', { class: 'where-note' }, annotationNote(lens.id)));
 }
 
 function drawHeatPair(left, right, toV, strength, maxCssWidth) {
