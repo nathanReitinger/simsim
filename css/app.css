@@ -2652,3 +2652,16 @@ details.group[open] .group-head {
   color: var(--text);
   font-weight: 600;
 }
+
+.ann-list li.ann-unmatched {
+  cursor: default;
+}
+
+.ann-hatch {
+  flex: none;
+  width: 42px;
+  height: 30px;
+  border-radius: 6px;
+  background: repeating-linear-gradient(135deg, rgba(15, 23, 42, 0.55) 0 5px, rgba(255, 255, 255, 0.75) 5px 7px);
+  border: 1px solid var(--border);
+}

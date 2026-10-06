@@ -493,11 +493,136 @@ export function drawDifferences(bmA, bmB, ann, { cssWidth, focus = null, labels 
   return p;
 }
 
+/** Grid cells whose best match in the other image falls below tau, grouped into connected pieces. */
+export function unmatchedPieces(grid, values, tau, minShare = 0.03) {
+  const { gw, gh } = grid;
+  const n = gw * gh;
+  const seen = new Uint8Array(n);
+  const pieces = [];
+  for (let i = 0; i < n; i++) {
+    if (seen[i] || !(values[i] < tau)) continue;
+    const cells = [];
+    const stack = [i];
+    seen[i] = 1;
+    while (stack.length) {
+      const c = stack.pop();
+      cells.push(c);
+      const x = c % gw;
+      const y = Math.floor(c / gw);
+      for (const [dx, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= gw || yy >= gh) continue;
+        const k = yy * gw + xx;
+        if (!seen[k] && values[k] < tau) {
+          seen[k] = 1;
+          stack.push(k);
+        }
+      }
+    }
+    if (cells.length >= Math.max(3, minShare * n)) {
+      const xs = cells.map((c) => c % gw);
+      const ys = cells.map((c) => Math.floor(c / gw));
+      pieces.push({
+        cells,
+        share: cells.length / n,
+        box: [Math.min(...xs) / gw, Math.min(...ys) / gh, (Math.max(...xs) + 1) / gw, (Math.max(...ys) + 1) / gh],
+        centre: [(xs.reduce((t, v) => t + v, 0) / cells.length + 0.5) / gw, (ys.reduce((t, v) => t + v, 0) / cells.length + 0.5) / gh],
+      });
+    }
+  }
+  return pieces.sort((p, q) => q.cells.length - p.cells.length);
+}
+
+/** Diagonal hatching (soft-edged) over the given cells of one image. */
+function hatch(p, rect, grid, cells) {
+  const m = document.createElement('canvas');
+  m.width = grid.gw;
+  m.height = grid.gh;
+  const mg = m.getContext('2d');
+  const id = mg.createImageData(grid.gw, grid.gh);
+  for (const i of cells) id.data[i * 4 + 3] = 255;
+  mg.putImageData(id, 0, 0);
+  const tile = document.createElement('canvas');
+  const t = Math.round(10 * p.u);
+  tile.width = t;
+  tile.height = t;
+  const tg = tile.getContext('2d');
+  tg.fillStyle = 'rgba(15, 23, 42, 0.5)';
+  tg.fillRect(0, 0, t, t);
+  tg.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+  tg.lineWidth = 1.6 * p.u;
+  tg.beginPath();
+  tg.moveTo(-t / 2, t / 2);
+  tg.lineTo(t / 2, -t / 2);
+  tg.moveTo(0, t);
+  tg.lineTo(t, 0);
+  tg.moveTo(t / 2, (3 * t) / 2);
+  tg.lineTo((3 * t) / 2, t / 2);
+  tg.stroke();
+  const off = document.createElement('canvas');
+  off.width = Math.round(rect.w);
+  off.height = Math.round(rect.h);
+  const og = off.getContext('2d');
+  og.fillStyle = og.createPattern(tile, 'repeat');
+  og.fillRect(0, 0, off.width, off.height);
+  og.globalCompositeOperation = 'destination-in';
+  og.imageSmoothingEnabled = true;
+  og.imageSmoothingQuality = 'high';
+  og.drawImage(m, 0, 0, off.width, off.height);
+  p.g.drawImage(off, rect.x, rect.y);
+}
+
+/** Hatch what has no counterpart in the other image. */
+function hatchUnmatched(p, unmatched) {
+  if (!unmatched) return;
+  for (const [side, rect] of [
+    ['a', p.a],
+    ['b', p.b],
+  ]) {
+    const u = unmatched[side];
+    if (u && u.pieces.length) hatch(p, rect, u.grid, u.pieces.flatMap((q) => q.cells));
+  }
+}
+
+/** Label the larger hatched pieces, on a hatched spot that overlaps nothing else. */
+function labelUnmatched(p, unmatched) {
+  if (!unmatched) return;
+  for (const [side, rect, other] of [
+    ['a', p.a, 'B'],
+    ['b', p.b, 'A'],
+  ]) {
+    const u = unmatched[side];
+    if (!u) continue;
+    for (const q of u.pieces.filter((x) => x.share >= 0.05).slice(0, 2)) {
+      const text = `no match in ${other}`;
+      const { w, h } = pillSize(p, text, 10.5);
+      const inPiece = new Set(q.cells);
+      const cands = [q.centre];
+      for (const fy of [0.2, 0.5, 0.8]) for (const fx of [0.2, 0.5, 0.8]) cands.push([q.box[0] + fx * (q.box[2] - q.box[0]), q.box[1] + fy * (q.box[3] - q.box[1])]);
+      for (const [cx, cy] of cands) {
+        const cell = Math.min(u.grid.gh - 1, Math.floor(cy * u.grid.gh)) * u.grid.gw + Math.min(u.grid.gw - 1, Math.floor(cx * u.grid.gw));
+        if (!inPiece.has(cell)) continue;
+        const x = Math.max(rect.x + 2 * p.u, Math.min(rect.x + rect.w - w - 2 * p.u, rect.x + cx * rect.w - w / 2));
+        const y = Math.max(rect.y + 2 * p.u, Math.min(rect.y + rect.h - h - 2 * p.u, rect.y + cy * rect.h - h / 2));
+        if (p.placed.some((o) => overlaps({ x, y, w, h }, o))) continue;
+        p.placed.push(drawPill(p, x, y, text, '#475569', 10.5));
+        break;
+      }
+    }
+  }
+}
+
 /**
  * Matching regions: each pair circled in its own colour on both images and
  * joined by a curved arrow from A to B, labelled with what it is and how alike.
  */
-export function drawRegions(bmA, bmB, ann, { cssWidth, focus = null } = {}) {
+export function drawRegions(bmA, bmB, ann, { cssWidth, focus = null, unmatched = null } = {}) {
   const p = stage(bmA, bmB, { cssWidth, gap: 72 });
   const big = (box, img) => ((box[2] - box[0]) * (box[3] - box[1])) / (img.width * img.height) >= 0.45;
   const shapeFor = (box, rect, img) => {
@@ -521,8 +646,9 @@ export function drawRegions(bmA, bmB, ann, { cssWidth, focus = null } = {}) {
   spotlight(
     p,
     lit.flatMap((i) => [i.fa ? { ...i.ea, rect: true } : i.ea, i.fb ? { ...i.eb, rect: true } : i.eb]),
-    focus ? 0.55 : 0.4,
+    focus ? 0.55 : unmatched ? 0.2 : 0.4,
   );
+  if (!focus) hatchUnmatched(p, unmatched);
   for (const { r, color, ea, eb, fa, fb } of items) {
     const alpha = focus && r.n !== focus ? 0.3 : 1;
     (fa ? markerRect : markerEllipse)(p, ea, color, r.n * 11, { alpha });
@@ -567,6 +693,7 @@ export function drawRegions(bmA, bmB, ann, { cssWidth, focus = null } = {}) {
     }
     p.placed.push(drawPill(p, best.x, best.y, text, color, 11, { alpha }));
   }
+  if (!focus) labelUnmatched(p, unmatched);
   return p;
 }
 

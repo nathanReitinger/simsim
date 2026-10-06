@@ -1141,7 +1141,8 @@ function annotationNote(id) {
   if (id === 'regions') {
     const n = ann.regions.length;
     const whole = ann.regions[0] && ann.regions[0].share >= 0.6;
-    return `${whole ? 'Nearly all of A reappears in B. ' : ''}${n} matching region${n === 1 ? '' : 's'}, joined A → B; the percentage is how alike their patches are. Point at (or tap) one to follow its arrow.`;
+    const hatched = v.dino && !ann.aligned ? ' Hatched areas have nothing like them in the other image — what B did not take from A, or added.' : '';
+    return `${whole ? 'Nearly all of A reappears in B. ' : ''}${n} matching region${n === 1 ? '' : 's'}, joined A → B; the percentage is how alike their patches are.${hatched} Point at (or tap) a region to follow its arrow.`;
   }
   if (id === 'probe') return 'Point at any part of either image (or tap it). The other image lights up wherever something resembles that spot, and the arrow lands on the closest match. Click to pin a point.';
   const e = v.sscd;
@@ -1335,6 +1336,14 @@ function annotatedView(id, cssWidth) {
   let focus = null;
   let stageNow = null;
   const score = v.sscd?.score ?? 0;
+  // what has no counterpart in the other image (DINOv2 best match below 0.42)
+  const unmatched =
+    id === 'regions' && v.dino && !ann.aligned
+      ? {
+          a: { grid: v.dino.a, pieces: AV.unmatchedPieces(v.dino.a, v.dino.a.values, 0.42) },
+          b: { grid: v.dino.b, pieces: AV.unmatchedPieces(v.dino.b, v.dino.b.values, 0.42) },
+        }
+      : null;
   const items =
     id === 'diff'
       ? ann.differences.map((d) => {
@@ -1387,10 +1396,29 @@ function annotatedView(id, cssWidth) {
         el('span', { class: 'ann-text' }, el('strong', {}, it.title), el('span', {}, it.sub)),
       ),
     ),
+    unmatched
+      ? ['a', 'b']
+          .filter((side) => unmatched[side].pieces.length)
+          .map((side) => {
+            const share = unmatched[side].pieces.reduce((t, q) => t + q.share, 0);
+            const where = [...new Set(unmatched[side].pieces.slice(0, 3).map((q) => placeName(q.box, { w: 1, h: 1 })))].join(', ');
+            return el(
+              'li',
+              { class: 'ann-unmatched' },
+              el('span', { class: 'ann-hatch', 'aria-hidden': 'true' }),
+              el(
+                'span',
+                { class: 'ann-text' },
+                el('strong', {}, side === 'a' ? 'Only in A' : 'Only in B'),
+                el('span', {}, `${Math.round(share * 100)}% of ${side.toUpperCase()} has nothing like it in ${side === 'a' ? 'B' : 'A'} · ${where}`),
+              ),
+            );
+          })
+      : '',
   );
   const draw = () => {
     if (id === 'diff') stageNow = AV.drawDifferences(A, B, ann, { cssWidth, focus });
-    else if (id === 'regions') stageNow = AV.drawRegions(A, B, ann, { cssWidth, focus });
+    else if (id === 'regions') stageNow = AV.drawRegions(A, B, ann, { cssWidth, focus, unmatched });
     else stageNow = AV.drawCopyLinks(A, B, v.sscd, { cssWidth, focus, underlay: evidenceUnderlay });
     stageNow.canvas.onclick = (e) => {
       const n = AV.hitTest(stageNow, e);

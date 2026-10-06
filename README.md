@@ -47,10 +47,21 @@ grouped by the question each view answers:
   - *Matching regions* — what B took from A, even when it was restaged or redrawn. DINOv2 mutual patch matches are
     grouped by the objects D-FINE detects in A (and where their matches land in B), with spatially coherent groups
     for everything else. Each pair is circled in its own colour and joined by an arrow from A to B.
-  - *Copy evidence (SSCD)* — SSCD’s score split exactly into per-region contributions, with circles on its peaks.
-    The model pools with GeM, which can be written as a sum over locations, so the cosine similarity decomposes
-    into a map whose cells add up to the score (following Stylianou, Souvenir & Pless, “Visualizing Deep
-    Similarity Networks”, WACV 2019). The export that adds this output is `tools/export_sscd.py --explain`.
+  - *Copy evidence (SSCD)* — SSCD’s score split exactly into **pairs** of locations, one in A and one in B. The
+    model pools with GeM, which can be written as a sum over locations, and its last layer is linear, so each
+    descriptor is a sum of per-location terms and the cosine score is a double sum over location pairs — a
+    second-order explanation in the spirit of BiLRP (Eberle et al., TPAMI 2020; cf. Stylianou et al., WACV 2019).
+    Each part of A points at the part of B it pairs with most strongly; parts that move together form one link,
+    drawn as matching colour patches joined by an arrow sized by its share of the score. A bar adds the links up
+    to the score, and a sentence reads the arrow pattern (in place, mirrored, cropped). On test pairs the
+    strongest pairing lands on the true corresponding location for nearly every high-evidence cell (JPEG,
+    caption, mirror, rotation) and most cells of a crop. The export that adds the per-location terms is
+    `tools/export_sscd.py --explain`.
+  - *Point and compare* — hover over (or tap) any spot in either image: the other image lights up wherever
+    something resembles it and an arrow lands on the closest match, using DINOv2 patch features or SSCD’s
+    pairwise evidence.
+  - When B shows only part of A (a crop) or sits inside a larger canvas, the Differences view outlines that part
+    and draws arrows from its corners to the other image’s corners.
 - **Same content?**
   - *Matching parts* — dense patch correspondences from DINOv2 features (mutual nearest neighbours, as in
     Amir et al., “Deep ViT Features as Dense Visual Descriptors”, 2021). Matched patches are marked with dots of
