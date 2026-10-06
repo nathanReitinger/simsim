@@ -13,6 +13,7 @@ import * as O from './lib/objects.js';
 import * as Ann from './lib/annotate.js';
 import * as P from './lib/provenance.js';
 import { detectSDWatermark } from './lib/watermark.js';
+import * as X from './lib/xfeat.js';
 import { grayToRgba, heatmap, rgbToRgba } from './lib/colormap.js';
 import exifr from '../vendor/exifr/exifr.full.esm.js';
 
@@ -29,8 +30,8 @@ const ORDER = [
   'ssim', 'msssim', 'psnr', 'ncc', 'uqi', 'gmsd', 'deltaE', 'changed', 'carlini',
   'histCorrel', 'histChi', 'histIntersect', 'histBhatt', 'lumaEmd',
   'exif', 'cmi', 'lineage', 'jpegq', 'thumbnail', 'sdmark',
-  'crop', 'orb', 'akaze', 'brisk', 'alignedSsim',
-  'sscd', 'sscdAligned', 'sscdLarge', 'dino', 'clip', 'lpips',
+  'crop', 'orb', 'akaze', 'brisk', 'xfeat', 'alignedSsim',
+  'sscd', 'sscdAligned', 'sscdLarge', 'dino', 'clip', 'dreamsim', 'lpips',
   'objects',
 ];
 
@@ -246,6 +247,69 @@ const hamming64 = (kind) => (c) => {
   return { value: H.hamming(a, b), detail: { A: H.bitsToHex(a), B: H.bitsToHex(b) } };
 };
 
+/** XFeat keypoints and descriptors of one image (optionally mirrored), in feature-image coordinates. */
+function xfeatFeatures(c, side, mirror = false) {
+  return c.get(`xfeat-${side}-${mirror}`, async () => {
+    const [ort, s] = await Promise.all([loadOrt(), session('xfeat')]);
+    let img = c[side].work;
+    if (mirror) {
+      const rgb = new Uint8Array(img.rgb.length);
+      for (let y = 0; y < img.h; y++) {
+        for (let x = 0; x < img.w; x++) {
+          const o = (y * img.w + x) * 3;
+          const m = (y * img.w + img.w - 1 - x) * 3;
+          rgb[o] = img.rgb[m];
+          rgb[o + 1] = img.rgb[m + 1];
+          rgb[o + 2] = img.rgb[m + 2];
+        }
+      }
+      img = { w: img.w, h: img.h, rgb };
+    }
+    const inp = X.xfeatInput(img, 640);
+    const out = await s.run({ image: new ort.Tensor('float32', inp.data, inp.dims) });
+    const d = X.xfeatDetect(out, inp, { topK: 2048 });
+    const f = c.featureImg(side);
+    const kx = f.w / img.w;
+    const ky = f.h / img.h;
+    for (let i = 0; i < d.n; i++) {
+      d.kpts[2 * i] *= kx;
+      d.kpts[2 * i + 1] *= ky;
+    }
+    return d;
+  });
+}
+
+/** Match XFeat features of A and (possibly mirrored) B and fit a homography B -> A. */
+async function xfeatMatch(c, mirror = false) {
+  const cv = await loadOpenCV();
+  const [A, B] = await Promise.all([xfeatFeatures(c, 'a'), xfeatFeatures(c, 'b', mirror)]);
+  const src = [];
+  const dst = [];
+  for (const [i, j] of X.xfeatMatch(A, B)) {
+    src.push(B.kpts[2 * j], B.kpts[2 * j + 1]);
+    dst.push(A.kpts[2 * i], A.kpts[2 * i + 1]);
+  }
+  const fb = c.featureImg('b');
+  return { ...F.homographyFromMatches(cv, src, dst, fb.w, fb.h), keypointsA: A.n, keypointsB: B.n };
+}
+
+function featureVerdict(c, r) {
+  const ratio = r.good ? r.inliers / r.good : 0;
+  let verdict = 'none';
+  if (r.sane && r.inliers >= 20 && ratio >= 0.5) verdict = 'match';
+  else if (r.sane && r.inliers >= 10 && ratio >= 0.4) verdict = 'partial';
+  return {
+    value: r.inliers,
+    verdict,
+    detail: {
+      'keypoints A / B': `${r.keypointsA} / ${r.keypointsB}`,
+      'ratio-test matches': r.good,
+      'RANSAC inliers': `${r.inliers} (${Math.round(ratio * 100)}%)`,
+      transform: r.sane ? describeTransform(c, r.H) : r.H ? 'implausible (rejected)' : 'none found',
+    },
+  };
+}
+
 async function featureRun(c, kind) {
   const cv = await loadOpenCV();
   const r = F.matchFeatures(cv, c.featureImg('a'), c.featureImg('b'), kind);
@@ -332,6 +396,10 @@ async function mirrorCheck(c) {
   for (const kind of ['orb', 'akaze']) {
     const r = F.matchFeatures(cv, c.featureImg('a'), { w: fb.w, h: fb.h, gray }, kind);
     if (r.sane && r.inliers >= 20 && (!best || r.inliers > best.inliers)) best = { H: r.H, inliers: r.inliers, kind };
+  }
+  if (!c.disabled?.includes('xfeat')) {
+    const r = await xfeatMatch(c, true).catch(() => null);
+    if (r && r.sane && r.inliers >= 20 && (!best || r.inliers > best.inliers)) best = { H: r.H, inliers: r.inliers, kind: 'xfeat' };
   }
   c.mirror = best;
 }
@@ -928,6 +996,15 @@ const RUN = {
     };
     return { value };
   },
+  async xfeat(c) {
+    const r = await xfeatMatch(c);
+    c.features.xfeat = r;
+    const out = featureVerdict(c, r);
+    out.detail['mutual matches'] = out.detail['ratio-test matches'];
+    delete out.detail['ratio-test matches'];
+    return out;
+  },
+
   async sscdAligned(c) {
     // SSCD on the shared region only, after undoing B's crop, rotation or
     // perspective with the keypoint transform: a copy pasted into a larger
@@ -1005,6 +1082,10 @@ const RUN = {
     return r;
   },
   clip: (c) => embedCompare(c, 'clip'),
+  async dreamsim(c) {
+    const r = await embedCompare(c, 'dreamsim');
+    return { value: 1 - r.value };
+  },
   async lpips(c) {
     const [ort, s] = await Promise.all([loadOrt(), session('lpips')]);
     const [w, h] = atLeast(fitWithin(c.a.work.w, c.a.work.h, LPIPS_MAX), 64);
@@ -1219,6 +1300,8 @@ async function scan({ scanId, a, b, disabled }) {
   c.results = {};
   for (const id of ORDER) {
     if (scanId !== currentScan) return;
+    // once every detector has run: retry against a mirrored B if nothing lined up
+    if (id === 'alignedSsim') await mirrorCheck(c).catch((err) => console.warn('mirror check failed', err));
     const engine = ENGINE_BY_ID[id];
     if (engine.model && disabled.includes(engine.model)) {
       post({ type: 'result', scanId, id, result: { verdict: 'skipped', display: 'turned off' } });
@@ -1237,7 +1320,6 @@ async function scan({ scanId, a, b, disabled }) {
     c.results[id] = result;
     if (scanId !== currentScan) return;
     post({ type: 'result', scanId, id, result });
-    if (id === 'brisk') await mirrorCheck(c).catch((err) => console.warn('mirror check failed', err));
     await tick();
   }
 

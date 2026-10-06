@@ -30,13 +30,15 @@ function el(tag, attrs = {}, ...children) {
 
 const COUNTED = new Set(['identical', 'match', 'partial', 'none']);
 const FLAGGED = new Set(['identical', 'match']);
-const MODEL_ORDER = ['sscd', 'lpips', 'dino', 'dfine', 'sscdLarge', 'clip'];
+const MODEL_ORDER = ['sscd', 'xfeat', 'lpips', 'dino', 'dfine', 'sscdLarge', 'clip', 'dreamsim'];
 const MODEL_INFO = {
   sscd: { name: 'SSCD (ResNet-50)', note: 'The main copy detector. Recommended.' },
   sscdLarge: { name: 'SSCD large (ResNeXt-101)', note: 'Replication-study setting from Somepalli et al.' },
   dino: { name: 'DINOv2 small', note: 'General visual similarity.' },
   clip: { name: 'CLIP ViT-B/32', note: 'Semantic similarity; the largest download.' },
   lpips: { name: 'LPIPS (AlexNet)', note: 'Perceptual distance; tiny.' },
+  xfeat: { name: 'XFeat keypoints', note: 'Learned keypoints for aligning copies; tiny.' },
+  dreamsim: { name: 'DreamSim', note: 'Similarity as people judge it; a large download.' },
   dfine: { name: 'D-FINE object detector', note: 'Finds hats, pictures, tables… for the Objects tab.' },
 };
 const ICONS = {
@@ -600,11 +602,33 @@ const SPOTLIGHT = [
     ],
   },
   {
+    id: 'sscdAligned',
+    title: 'SSCD after alignment',
+    sub: 'crop, rotation or mirror undone first',
+    ticks: [0.5, 0.75],
+    zones: [
+      ['partial', 0.5, 0.75],
+      ['match', 0.75, 1],
+    ],
+  },
+  {
     id: 'sscdLarge',
     title: 'SSCD · Somepalli et al.',
     sub: 'replication threshold 0.5',
     ticks: [0.5, 0.7],
     zones: [['match', 0.5, 1]],
+  },
+  {
+    id: 'dreamsim',
+    title: 'DreamSim (for contrast)',
+    sub: 'how alike people would call them',
+    // a distance: plotted as 1 − d so that further right means more alike
+    invert: true,
+    ticks: [0.4, 0.12],
+    zones: [
+      ['partial', 0.12, 0.4],
+      ['match', 0, 0.12],
+    ],
   },
   {
     id: 'clip',
@@ -626,15 +650,17 @@ function renderSpotlight() {
     el(
       'p',
       { class: 'spotlight-intro' },
-      'SSCD (Pizzi et al., CVPR 2022) is trained to recognise edited copies and is the measure Somepalli et al. used to find training-data replication in Stable Diffusion. Scores are cosine similarities; the bars show the published thresholds. CLIP is shown for contrast: it measures whether images depict similar things.',
+      'SSCD (Pizzi et al., CVPR 2022) is trained to recognise edited copies and is the measure Somepalli et al. used to find training-data replication in Stable Diffusion. Scores are cosine similarities; the bars show the published thresholds. For contrast, DreamSim shows how alike people would judge the two images (a distance, so further right is more alike) and CLIP whether they depict similar things — neither is copy detection.',
     ),
   );
   for (const m of SPOTLIGHT) {
     const track = el('div', { class: 'meter-track' });
+    const pos = (x) => (m.invert ? 1 - x : x);
     for (const [kind, from, to] of m.zones) {
-      track.append(el('div', { class: `meter-zone ${kind}`, style: `left:${from * 100}%;width:${(to - from) * 100}%` }));
+      const [l, r] = [pos(from), pos(to)].sort((a, b) => a - b);
+      track.append(el('div', { class: `meter-zone ${kind}`, style: `left:${l * 100}%;width:${(r - l) * 100}%` }));
     }
-    for (const t of m.ticks) track.append(el('div', { class: 'meter-tick', style: `left:${t * 100}%` }, el('span', {}, t.toFixed(2))));
+    for (const t of m.ticks) track.append(el('div', { class: 'meter-tick', style: `left:${pos(t) * 100}%` }, el('span', {}, t.toFixed(2))));
     track.append(el('div', { class: 'meter-marker', style: 'left:0%', hidden: true }));
     box.append(
       el(
@@ -659,7 +685,9 @@ function updateSpotlight(id) {
   if (r && typeof r.value === 'number' && COUNTED.has(r.verdict)) {
     row.dataset.verdict = r.verdict;
     marker.hidden = false;
-    marker.style.left = `${Math.max(0, Math.min(1, r.value)) * 100}%`;
+    const m = SPOTLIGHT.find((x) => x.id === id);
+    const p = m?.invert ? 1 - r.value : r.value;
+    marker.style.left = `${Math.max(0, Math.min(1, p)) * 100}%`;
     value.textContent = r.value.toFixed(3);
   } else {
     row.dataset.verdict = 'pending';
@@ -720,9 +748,11 @@ function headline(results) {
   }
   const clip = has('clip') ? v('clip') : null;
   const dino = has('dino') ? v('dino') : null;
+  const ds = has('dreamsim') ? v('dreamsim') : null;
   const share = state.visuals?.dino?.mutualShare;
-  if ((clip !== null && clip >= 0.75) || (dino !== null && dino >= 0.4) || (share !== undefined && share >= 0.1)) {
-    return { tone: 'similar', title: 'Similar subject, not a copy', sub: 'Semantic models (CLIP / DINOv2) see related content, but the copy detectors do not flag it.' };
+  if ((clip !== null && clip >= 0.75) || (dino !== null && dino >= 0.4) || (share !== undefined && share >= 0.1) || (ds !== null && ds <= 0.4)) {
+    const people = ds !== null && ds <= 0.4 ? ` DreamSim, trained on human judgments, puts them ${ds.toFixed(2)} apart — people would call them alike.` : '';
+    return { tone: 'similar', title: 'Similar subject, not a copy', sub: `Semantic models (CLIP / DINOv2) see related content, but the copy detectors do not flag it.${people}` };
   }
   return { tone: 'none', title: 'No meaningful similarity', sub: 'The copy detectors, hashes and keypoints all treat these as different images.' };
 }
@@ -800,7 +830,9 @@ function similarityLevel(R, V) {
   const dino = val('dino');
   const clip = val('clip');
   const share = V?.dino?.mutualShare;
+  const dsv = val('dreamsim');
   const sem = [
+    dsv !== null && dsv <= 0.4 ? `DreamSim distance ${dsv.toFixed(2)} (people would call them alike)` : null,
     dino !== null && dino >= 0.4 ? `DINOv2 ${dino.toFixed(2)}` : null,
     clip !== null && clip >= 0.75 ? `CLIP ${clip.toFixed(2)}` : null,
     share !== undefined && share >= 0.1 ? `${Math.round(share * 100)}% of patches find a counterpart` : null,

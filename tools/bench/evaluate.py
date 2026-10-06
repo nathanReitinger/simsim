@@ -44,7 +44,7 @@ def load(name): return Image.open(os.path.join(B, 'img', name + '.png')).convert
 names = sorted({p[0] for p in pairs} | {p[1] for p in pairs})
 extra = sys.argv[1:]  # optional: python evaluate.py module.py  (module defines NAME, setup(), embed(state, im))
 for path in extra:
-    ns = {}; exec(open(path).read(), ns); MODELS[ns['NAME']] = (ns['setup'], ns['embed'])
+    ns = dict(globals()); exec(open(path).read(), ns); MODELS[ns['NAME']] = (ns['setup'], ns['embed'])
 
 def report(name, score_fn):
     s = np.array([score_fn(a, b) for a, b, _, _ in pairs]); y = np.array([p[2] for p in pairs]); kinds = [p[3] for p in pairs]

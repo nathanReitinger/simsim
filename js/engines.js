@@ -168,6 +168,29 @@ export const ENGINES = [
     pipeline: 'Resize short edge to 224 (bicubic), centre crop 224, CLIP normalisation (Hugging Face preprocessing).',
   },
   {
+    id: 'dreamsim',
+    group: 'neural',
+    name: 'DreamSim — would people call them alike?',
+    by: 'Fu et al., NeurIPS 2023 · OpenCLIP ViT-B/32 tuned on human judgments',
+    metric: 'perceptual distance (0 = same, about 0.8 = unrelated)',
+    better: 'lower',
+    match: 0.12,
+    partial: 0.4,
+    format: f3,
+    model: 'dreamsim',
+    about:
+      'DreamSim was trained on NIGHTS, 20,000 sets of human votes about which of two images looks more like a third, and agrees with those votes 95% of the time (this single-backbone version; 96% for the full ensemble). It responds to layout, pose, colour and subject together — the overall impression a person forms at a glance. That makes it the closest computational stand-in for the ordinary observer, with the same blind spot: it cannot tell protected expression from shared ideas or stock elements.',
+    thresholds:
+      '≤ 0.12: looks the same. 0.12–0.40: looks alike (a staged recreation of a photo scores about 0.3). Above 0.40: looks different; unrelated photos score about 0.8. Thresholds calibrated on the site’s benchmark (1% of unrelated pairs fall below 0.41).',
+    robust: ['compression', 'colour edits', 'mirroring', 'mild crops', 'restaging the same scene'],
+    weak: ['small pasted copies (collages)', 'large overlays'],
+    refs: [
+      { label: 'Fu et al., NeurIPS 2023', url: 'https://arxiv.org/abs/2306.09344' },
+      { label: 'Code & weights (MIT)', url: 'https://github.com/ssundaram21/dreamsim' },
+    ],
+    pipeline: 'Bicubic resize to 224×224 (no crop), OpenCLIP ViT-B/32 with DreamSim’s LoRA weights merged, normalised embedding, distance = 1 − cosine.',
+  },
+  {
     id: 'lpips',
     group: 'neural',
     name: 'LPIPS perceptual distance',
@@ -451,6 +474,27 @@ export const ENGINES = [
     robust: ['crops', 'rotation', 'scaling', 'compression'],
     weak: ['mirroring', 'blur', 'flat images'],
     refs: [{ label: 'Leutenegger et al., ICCV 2011', url: 'https://doi.org/10.1109/ICCV.2011.6126542' }],
+  },
+  {
+    id: 'xfeat',
+    group: 'geometry',
+    name: 'XFeat learned keypoints + RANSAC',
+    by: 'Potje et al., CVPR 2024 · mutual nearest neighbours',
+    metric: 'geometrically consistent matches (inliers)',
+    better: 'higher',
+    match: 20,
+    partial: 10,
+    format: (v) => `${v} inliers`,
+    model: 'xfeat',
+    about:
+      'A small neural network trained to find and describe keypoints that survive changes of lighting, blur and viewpoint — far more robust than the hand-made ORB, AKAZE and BRISK detectors on heavily edited copies. Matches are mutual nearest neighbours of the 64-d descriptors, kept only if one homography explains them. The best transform from any detector is used to line B up with A elsewhere on the page.',
+    thresholds: 'Same as ORB: ≥ 20 inliers in one plausible transform is a match.',
+    robust: ['crops', 'scaling', 'recolouring', 'blur', 'captions and overlays', 'moderate rotation and perspective'],
+    weak: ['rotations beyond ~45° (ORB covers those)', 'mirroring (retried with B flipped)'],
+    refs: [
+      { label: 'Potje et al., CVPR 2024', url: 'https://arxiv.org/abs/2404.19174' },
+      { label: 'Code & weights (Apache-2.0)', url: 'https://github.com/verlab/accelerated_features' },
+    ],
   },
   {
     id: 'alignedSsim',

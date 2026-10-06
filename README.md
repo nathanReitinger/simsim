@@ -17,11 +17,11 @@ requests welcome.
 
 | Group | Tests |
 | --- | --- |
-| **Neural copy detection** | SSCD ResNet-50 (`sscd_disc_mixup`, official preprocessing) · SSCD after alignment (crop, rotation, perspective or mirroring undone with the keypoint transform, then SSCD on the shared region) · SSCD ResNeXt-101 in the Somepalli et al. replication setting (`sscd_disc_large`, resize 256 / centre-crop 224) · DINOv2 ViT-S/14 · CLIP ViT-B/32 · LPIPS (AlexNet) |
+| **Neural copy detection** | SSCD ResNet-50 (`sscd_disc_mixup`, official preprocessing) · SSCD after alignment (crop, rotation, perspective or mirroring undone with the keypoint transform, then SSCD on the shared region) · SSCD ResNeXt-101 in the Somepalli et al. replication setting (`sscd_disc_large`, resize 256 / centre-crop 224) · DINOv2 ViT-S/14 · CLIP ViT-B/32 · DreamSim (OpenCLIP ViT-B/32 tuned on human similarity judgments) · LPIPS (AlexNet) |
 | **Objects** | D-FINE object detector (365 Objects365 categories): objects are found in both images, paired up and compared one by one, with marked-up images in the Objects tab |
 | **Exact & verbatim** | SHA-256 · SHA-1 · MD5 · same image data with metadata set aside (hash of the JPEG scans / PNG image chunks / WebP bitstream) · pixel-exact match of decoded pixels · verbatim crop search (template matching, verified pixel-for-pixel) |
 | **Perceptual hashes** | PDQ (Meta) · PDQ over all 8 rotations/mirrors · pHash · dHash · aHash · wHash · Blockhash |
-| **Keypoints & geometry** | ORB, AKAZE and BRISK keypoints with RANSAC homography · SSIM after aligning B onto A |
+| **Keypoints & geometry** | ORB, AKAZE and BRISK keypoints with RANSAC homography · XFeat learned keypoints (CVPR 2024) with mutual-nearest-neighbour matching · retry against a mirrored B · SSIM after aligning B onto A |
 | **Pixel & structural** | SSIM · MS-SSIM · PSNR · normalised cross-correlation · UQI · GMSD · CIEDE2000 ΔE · changed-pixel ratio · Carlini et al.’s tiled ℓ2 extraction test (512², worst of 16 tiles, ≤ 0.15) |
 | **Colour & histograms** | Hue–saturation correlation · χ² · RGB histogram intersection · Bhattacharyya · brightness EMD |
 | **Metadata & provenance** | EXIF capture fields (camera, timestamp, unique IDs) · copyright management information (XMP/IPTC/EXIF creator, rights, credit, licence — flagged when B drops A’s) · XMP edit history (DocumentID, DerivedFrom, DocumentAncestors; AI-generator settings in PNG text) · JPEG encoder fingerprint (quantization tables, estimated quality, subsampling) · embedded EXIF preview vs both images · Stable Diffusion’s invisible watermark (the invisible-watermark “dwtDct” mark written by the SD 1.x/2.x reference scripts and the SDXL pipeline; decoder verified bit-for-bit against the reference library) |
@@ -137,6 +137,12 @@ The `tools/` folder contains the conversion scripts:
 - [`tools/export_hf_vision.py`](tools/export_hf_vision.py) — takes the full-precision ONNX exports of CLIP ViT-B/32
   (Xenova), DINOv2-small and the D-FINE-M Objects365 detector (onnx-community) from Hugging Face at pinned
   revisions.
+- [`tools/export_xfeat.py`](tools/export_xfeat.py) — exports the XFeat backbone (Apache-2.0) with dynamic image
+  sizes (its `unfold` replaced by an equivalent reshape). The keypoint heat map, NMS, reliability scoring and
+  bicubic descriptor sampling are ported to [`js/lib/xfeat.js`](js/lib/xfeat.js) and reproduce the reference
+  `detectAndCompute` exactly (same 1,024 keypoints, descriptor cosine 1.00000).
+- [`tools/export_dreamsim.py`](tools/export_dreamsim.py) — merges DreamSim's LoRA weights into the OpenCLIP
+  ViT-B/32 backbone (MIT) and exports the normalised embedding (cosine to PyTorch 0.9997 after int8 compression).
 - [`tools/quantize_weights.py`](tools/quantize_weights.py) — stores each large weight as int8 with a per-channel
   scale and rebuilds it in fp32 inside the graph, so inference still runs in fp32. The few layers that are
   sensitive to rounding (the stem / first blocks / patch embedding, found by a per-layer sensitivity sweep) stay
@@ -171,8 +177,10 @@ contrast, a combined crop+mirror+recolour+caption edit, and a collage that paste
 | --- | --- | --- | --- |
 | SSCD | 0.997 | 99.4% | weak on collage 5%, rotation 15° 5%, pixelation 11%, corner crop 16% |
 | SSCD after alignment (max with SSCD) | — | 99.7% | collage 79%, rotation 15° 84%, corner crop 84%, perspective 84%, memes 84% — and no new false alarms |
+| SSCD after alignment with XFeat + ORB | — | 99.7% | collage 89%, corner crop 100%, memes 100%, perspective 95%, rotation 15° 95%, rotation 90° 89% |
 | SSCD Somepalli setting | 0.998 | 98.3% | |
 | DINOv2 | 0.998 | 97.2% | |
+| DreamSim | 0.993 | 90.0% | (not a copy detector: it tracks how alike people find the images) |
 | CLIP | 0.983 | 83.7% | |
 | pHash | 0.827 | 52.6% | |
 
@@ -194,6 +202,9 @@ carried SSCD’s evidence did not help.
 
 - SSCD: Pizzi et al., *A Self-Supervised Descriptor for Image Copy Detection*, CVPR 2022 — MIT.
 - D-FINE: Peng et al., ICLR 2025 — Apache-2.0; trained on Objects365 (Shao et al., ICCV 2019).
+- XFeat: Potje et al., *XFeat: Accelerated Features for Lightweight Image Matching*, CVPR 2024 — Apache-2.0.
+- DreamSim: Fu et al., *DreamSim: Learning New Dimensions of Human Visual Similarity using Synthetic Data*,
+  NeurIPS 2023 — MIT (OpenCLIP backbone, MIT).
 - DINOv2: Oquab et al., 2023 — Apache-2.0. CLIP: Radford et al., 2021 — MIT. LPIPS: Zhang et al., CVPR 2018 —
   BSD-2-Clause (AlexNet weights from torchvision, BSD-3-Clause).
   Licence texts are in [`models/licenses/`](models/licenses).

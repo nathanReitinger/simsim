@@ -108,6 +108,35 @@ export function matchFeatures(cv, A, B, kind) {
 }
 
 /**
+ * RANSAC homography from matched points (src in B, dst in A, flat [x, y, ...]
+ * arrays): the same verification ORB/AKAZE/BRISK use, for learned matchers.
+ */
+export function homographyFromMatches(cv, src, dst, wB, hB) {
+  const res = { good: src.length / 2, inliers: 0, H: null, sane: false, matches: [] };
+  if (res.good < 8) return res;
+  const del = [];
+  const keep = (o) => (del.push(o), o);
+  try {
+    const srcM = keep(cv.matFromArray(res.good, 1, cv.CV_32FC2, src));
+    const dstM = keep(cv.matFromArray(res.good, 1, cv.CV_32FC2, dst));
+    const mask = keep(new cv.Mat());
+    const H = keep(cv.findHomography(srcM, dstM, cv.RANSAC, 5.0, mask));
+    if (H.empty()) return res;
+    res.H = Array.from(H.data64F);
+    for (let i = 0; i < res.good; i++) {
+      if (mask.data[i]) {
+        res.inliers++;
+        res.matches.push([src[2 * i], src[2 * i + 1], dst[2 * i], dst[2 * i + 1]]);
+      }
+    }
+    res.sane = homographySane(res.H, wB, hB);
+    return res;
+  } finally {
+    for (const o of del) o.delete();
+  }
+}
+
+/**
  * Is the smaller image contained in the larger one at the same scale?
  * Inputs are grayscale images downscaled by the same factor.
  */

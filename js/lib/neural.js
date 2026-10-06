@@ -39,6 +39,19 @@ export const MODELS = {
     input: 'pixel_values',
     output: 'last_hidden_state',
   },
+  dreamsim: {
+    label: 'DreamSim (OpenCLIP ViT-B/32, NIGHTS-tuned)',
+    files: ['models/dreamsim_ocb32.onnx.part1', 'models/dreamsim_ocb32.onnx.part2'],
+    bytes: 89943554,
+    input: 'pixel_values',
+    output: 'embedding',
+  },
+  xfeat: {
+    label: 'XFeat keypoints (CVPR 2024)',
+    files: ['models/xfeat.onnx'],
+    bytes: 2658076,
+    input: 'image',
+  },
   lpips: {
     label: 'LPIPS (AlexNet, v0.1)',
     files: ['models/lpips_alex.onnx'],
@@ -80,6 +93,11 @@ export const PREPROCESS = {
     return { data: toCHW(c, HALF.mean, HALF.std), dims: [1, 3, 224, 224] };
   },
   clip: (img) => hfPreprocess(img, 224, 224, CLIP_NORM),
+  // DreamSim: bicubic resize to 224×224 (no crop), values in [0, 1]; the model normalises internally
+  dreamsim(img) {
+    const r = resizeImg(img, 224, 224, 'bicubic');
+    return { data: toCHW(r, [0, 0, 0], [1, 1, 1]), dims: [1, 3, 224, 224] };
+  },
   dino: (img) => hfPreprocess(img, 256, 224, IMAGENET),
 };
 
