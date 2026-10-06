@@ -716,6 +716,23 @@ export const ENGINES = [
     refs: [{ label: 'EXIF 2.32 spec', url: 'https://www.cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf' }],
   },
   {
+    id: 'sdmark',
+    group: 'meta',
+    name: 'Stable Diffusion watermark',
+    by: 'invisible-watermark “dwtDct”, as in the SD reference code',
+    metric: 'share of watermark bits recovered',
+    better: 'equal',
+    about:
+      'The Stable Diffusion 1.x and 2.x reference scripts, and the SDXL pipeline in Hugging Face diffusers, hide a short message in every image they make (“StableDiffusionV1”, “SDV2”, or a 48-bit SDXL code), using the invisible-watermark library’s DWT-DCT method. This test reads the hidden bits back. Finding the mark shows the image left one of those pipelines unmodified.',
+    thresholds: '≥ 90% of a known message’s bits recovered: found (unmarked images give about 50%). Absence proves nothing — most other generators do not add this mark, and any resize, crop or JPEG re-save erases it.',
+    robust: ['lossless saving (PNG)'],
+    weak: ['resizing, cropping, JPEG re-saving', 'tools that skip the watermark'],
+    refs: [
+      { label: 'invisible-watermark (ShieldMnt)', url: 'https://github.com/ShieldMnt/invisible-watermark' },
+      { label: 'Stable Diffusion txt2img.py', url: 'https://github.com/CompVis/stable-diffusion/blob/main/scripts/txt2img.py' },
+    ],
+  },
+  {
     id: 'cmi',
     group: 'meta',
     name: 'Copyright notices (CMI)',
@@ -800,6 +817,7 @@ export const VERDICT_LABEL = {
   partial: 'Partial',
   none: 'No match',
   na: 'N/A',
+  info: 'Found',
   error: 'Error',
   skipped: 'Off',
   pending: 'Waiting',

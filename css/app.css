@@ -2716,3 +2716,16 @@ details.group[open] .group-head {
 .cover-readout strong {
   color: var(--text);
 }
+
+.engine[data-verdict='info'] .engine-icon {
+  background: var(--accent);
+}
+
+.gdot[data-verdict='info'] {
+  background: var(--accent);
+}
+
+.chip[data-verdict='info'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}

@@ -12,6 +12,7 @@ import * as N from './lib/neural.js';
 import * as O from './lib/objects.js';
 import * as Ann from './lib/annotate.js';
 import * as P from './lib/provenance.js';
+import { detectSDWatermark } from './lib/watermark.js';
 import { grayToRgba, heatmap, rgbToRgba } from './lib/colormap.js';
 import exifr from '../vendor/exifr/exifr.full.esm.js';
 
@@ -27,7 +28,7 @@ const ORDER = [
   'pdq', 'pdqDihedral', 'phash', 'dhash', 'ahash', 'whash', 'blockhash',
   'ssim', 'msssim', 'psnr', 'ncc', 'uqi', 'gmsd', 'deltaE', 'changed', 'carlini',
   'histCorrel', 'histChi', 'histIntersect', 'histBhatt', 'lumaEmd',
-  'exif', 'cmi', 'lineage', 'jpegq', 'thumbnail',
+  'exif', 'cmi', 'lineage', 'jpegq', 'thumbnail', 'sdmark',
   'crop', 'orb', 'akaze', 'brisk', 'alignedSsim',
   'sscd', 'sscdAligned', 'sscdLarge', 'dino', 'clip', 'lpips',
   'objects',
@@ -695,6 +696,32 @@ const RUN = {
         : b.quality < a.quality
           ? 'B was saved at a lower quality — consistent with (but not proof of) B being a re-save of A.'
           : undefined,
+    };
+  },
+
+  sdmark(c) {
+    // Stable Diffusion's invisible watermark, read from the full-resolution pixels
+    const found = {};
+    const detail = {};
+    for (const side of ['a', 'b']) {
+      const r = detectSDWatermark(c[side].rgba, c[side].w, c[side].h);
+      if (!r.checked) {
+        detail[side.toUpperCase()] = r.reason;
+        continue;
+      }
+      detail[side.toUpperCase()] = `${r.best.accuracy >= 0.9 ? 'found: ' : 'not found (best: '}${r.best.name}${r.best.accuracy >= 0.9 ? '' : ')'} — ${Math.round(r.best.accuracy * 100)}% of bits`;
+      if (r.best.accuracy >= 0.9) found[side] = r.best.name;
+    }
+    const sides = Object.keys(found);
+    if (!sides.length) {
+      return { verdict: 'na', display: 'none found', detail, note: 'Absence proves nothing: most generators do not add this mark, and resizing, cropping or JPEG re-saving erases it.' };
+    }
+    const short = (n) => n.replace(/ \(.*\)$/, '').replace(' reference scripts', '');
+    return {
+      verdict: 'info',
+      display: sides.length === 2 ? `both: ${short(found.a)}` : `${sides[0].toUpperCase()}: ${short(found[sides[0]])}`,
+      detail,
+      note: `${sides.map((s) => s.toUpperCase()).join(' and ')} ${sides.length === 2 ? 'carry' : 'carries'} Stable Diffusion’s invisible watermark: ${sides.length === 2 ? 'both images' : 'that image'} came out of a Stable Diffusion pipeline and ${sides.length === 2 ? 'have' : 'has'} not been resized or re-saved since.`,
     };
   },
 

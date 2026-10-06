@@ -46,6 +46,7 @@ const ICONS = {
   none: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   na: '<svg viewBox="0 0 24 24"><path d="M7 12h10"/></svg>',
   error: '<svg viewBox="0 0 24 24"><path d="M8 8l8 8m0-8-8 8"/></svg>',
+  info: '<svg viewBox="0 0 24 24"><path d="M12 11v6m0-10h.01"/></svg>',
 };
 
 // ------------------------------------------------------------------ state
