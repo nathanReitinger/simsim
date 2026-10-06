@@ -2,7 +2,7 @@
 
 **Live site: <https://nathanreitinger.github.io/simsim/>**
 
-A VirusTotal-style scanner for image similarity. Drop two images and **36 tests** run side by side — from
+A VirusTotal-style scanner for image similarity. Drop two images and **43 tests** run side by side — from
 byte-level file hashes to Meta's **SSCD** copy detector — and the page reports how many of them flag the pair
 as similar, with an explanation of every test.
 
@@ -17,14 +17,14 @@ requests welcome.
 
 | Group | Tests |
 | --- | --- |
-| **Neural copy detection** | SSCD ResNet-50 (`sscd_disc_mixup`, official preprocessing) · SSCD ResNeXt-101 in the Somepalli et al. replication setting (`sscd_disc_large`, resize 256 / centre-crop 224) · DINOv2 ViT-S/14 · CLIP ViT-B/32 · LPIPS (AlexNet) |
+| **Neural copy detection** | SSCD ResNet-50 (`sscd_disc_mixup`, official preprocessing) · SSCD after alignment (crop, rotation, perspective or mirroring undone with the keypoint transform, then SSCD on the shared region) · SSCD ResNeXt-101 in the Somepalli et al. replication setting (`sscd_disc_large`, resize 256 / centre-crop 224) · DINOv2 ViT-S/14 · CLIP ViT-B/32 · LPIPS (AlexNet) |
 | **Objects** | D-FINE object detector (365 Objects365 categories): objects are found in both images, paired up and compared one by one, with marked-up images in the Objects tab |
-| **Exact & verbatim** | SHA-256 · SHA-1 · MD5 · pixel-exact match of decoded pixels · verbatim crop search (template matching, verified pixel-for-pixel) |
+| **Exact & verbatim** | SHA-256 · SHA-1 · MD5 · same image data with metadata set aside (hash of the JPEG scans / PNG image chunks / WebP bitstream) · pixel-exact match of decoded pixels · verbatim crop search (template matching, verified pixel-for-pixel) |
 | **Perceptual hashes** | PDQ (Meta) · PDQ over all 8 rotations/mirrors · pHash · dHash · aHash · wHash · Blockhash |
 | **Keypoints & geometry** | ORB, AKAZE and BRISK keypoints with RANSAC homography · SSIM after aligning B onto A |
-| **Pixel & structural** | SSIM · MS-SSIM · PSNR · normalised cross-correlation · UQI · GMSD · CIEDE2000 ΔE · changed-pixel ratio |
+| **Pixel & structural** | SSIM · MS-SSIM · PSNR · normalised cross-correlation · UQI · GMSD · CIEDE2000 ΔE · changed-pixel ratio · Carlini et al.’s tiled ℓ2 extraction test (512², worst of 16 tiles, ≤ 0.15) |
 | **Colour & histograms** | Hue–saturation correlation · χ² · RGB histogram intersection · Bhattacharyya · brightness EMD |
-| **Metadata** | EXIF / XMP capture fields (camera, timestamp, unique IDs) |
+| **Metadata & provenance** | EXIF capture fields (camera, timestamp, unique IDs) · copyright management information (XMP/IPTC/EXIF creator, rights, credit, licence — flagged when B drops A’s) · XMP edit history (DocumentID, DerivedFrom, DocumentAncestors; AI-generator settings in PNG text) · JPEG encoder fingerprint (quantization tables, estimated quality, subsampling) · embedded EXIF preview vs both images |
 
 Each test has a verdict (*Identical*, *Match*, *Partial*, *No match*, *N/A*). Thresholds come from the source
 papers where they exist — SSCD ≥ 0.75 (90% precision on DISC2021, per the SSCD authors), SSCD > 0.5 for
@@ -158,6 +158,27 @@ The JavaScript implementations were checked against the standard Python implemen
   CIEDE2000 matches `skimage` and the Sharma et al. test data;
 - the neural preprocessing reproduces torchvision / Hugging Face pipelines, and similarities computed in
   JavaScript match Python ONNX Runtime within 1e-6.
+
+### Benchmark of the copy detectors
+
+[`tools/bench`](tools/bench) builds a small copy-detection benchmark from the scikit-image sample images: 19 base
+images, each edited 19 ways (JPEG q15, 40% downscale, centre and corner crops, mirror, 15° and 90° rotation, hue
+shift, greyscale, blur, noise, meme captions, an emoji-style overlay, a screenshot frame, perspective, pixelation,
+contrast, a combined crop+mirror+recolour+caption edit, and a collage that pastes the image into another), plus
+2,033 pairs of unrelated images. It scores the site’s own ONNX models:
+
+| Test | AUC | Copies found at 1% false alarms | Copies at the 0.75 copy threshold |
+| --- | --- | --- | --- |
+| SSCD | 0.997 | 99.4% | weak on collage 5%, rotation 15° 5%, pixelation 11%, corner crop 16% |
+| SSCD after alignment (max with SSCD) | — | 99.7% | collage 79%, rotation 15° 84%, corner crop 84%, perspective 84%, memes 84% — and no new false alarms |
+| SSCD Somepalli setting | 0.998 | 98.3% | |
+| DINOv2 | 0.998 | 97.2% | |
+| CLIP | 0.983 | 83.7% | |
+| pHash | 0.827 | 52.6% | |
+
+Two other partial-copy strategies were tried and not shipped: the maximum over 18 crops of each image found every
+collage but cost 36 extra network runs per pair and raised the false-alarm level; re-scoring the region that
+carried SSCD’s evidence did not help.
 
 ## Caveats
 

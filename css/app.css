@@ -2665,3 +2665,33 @@ details.group[open] .group-head {
   background: repeating-linear-gradient(135deg, rgba(15, 23, 42, 0.55) 0 5px, rgba(255, 255, 255, 0.75) 5px 7px);
   border: 1px solid var(--border);
 }
+
+.two-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 760px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.two-legend i {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  border-radius: 4px;
+  vertical-align: -2px;
+}
+
+.two-legend b {
+  color: var(--text);
+}
+
+.sw-copied {
+  background: rgba(239, 35, 60, 0.75);
+}
+
+.sw-similar {
+  background: rgba(245, 158, 11, 0.75);
+}

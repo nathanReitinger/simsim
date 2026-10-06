@@ -894,6 +894,138 @@ export function probeStage(bmA, bmB, source, { cssWidth } = {}) {
   return { ...p, draw };
 }
 
+/** Colour keyed to position in A: hue runs left to right, lightness top to bottom. */
+function fieldColour(fx, fy) {
+  const h = 300 * fx;
+  const l = 0.38 + 0.3 * fy;
+  const s = 0.9;
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [Math.round(255 * f(0)), Math.round(255 * f(8)), Math.round(255 * f(4))];
+}
+
+/** Paint a gw×gh grid of [r, g, b, a] cells smoothly over an image. */
+function paintGrid(p, rect, grid, cellRGBA) {
+  const c = document.createElement('canvas');
+  c.width = grid.gw;
+  c.height = grid.gh;
+  const g = c.getContext('2d');
+  const id = g.createImageData(grid.gw, grid.gh);
+  for (let i = 0; i < grid.gw * grid.gh; i++) {
+    const [r, gg, b, a] = cellRGBA(i);
+    id.data[i * 4] = r;
+    id.data[i * 4 + 1] = gg;
+    id.data[i * 4 + 2] = b;
+    id.data[i * 4 + 3] = Math.round(255 * Math.max(0, Math.min(1, a)));
+  }
+  g.putImageData(id, 0, 0);
+  p.g.save();
+  p.g.imageSmoothingEnabled = true;
+  p.g.imageSmoothingQuality = 'high';
+  p.g.drawImage(c, rect.x, rect.y, rect.w, rect.h);
+  p.g.restore();
+}
+
+/**
+ * Colour-transfer map: A is painted with a colour field keyed to position;
+ * each part of B takes the colours of the parts of A it pairs with in SSCD's
+ * score, weighted by those pairs' contributions, and is as opaque as its
+ * share of the evidence. A mirror image shows the rainbow reversed, a crop
+ * shows a stretched slice of it, a collage shows it only where A was pasted.
+ */
+export function drawColourMap(bmA, bmB, sscd, { cssWidth } = {}) {
+  const p = stage(bmA, bmB, { cssWidth, gap: 40 });
+  const ga = sscd.a;
+  const gb = sscd.b;
+  const nA = ga.gw * ga.gh;
+  const nB = gb.gw * gb.gh;
+  const R = sscd.pairs;
+  const colA = (l) => fieldColour(((l % ga.gw) + 0.5) / ga.gw, (Math.floor(l / ga.gw) + 0.5) / ga.gh);
+  const strength = Math.max(0.35, Math.min(1, (sscd.score - 0.1) / 0.5));
+  paintGrid(p, p.a, ga, (l) => [...colA(l), 0.62]);
+  const mix = new Float32Array(nB * 3);
+  const mass = new Float32Array(nB);
+  for (let m = 0; m < nB; m++) {
+    let w = 0;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    for (let l = 0; l < nA; l++) {
+      const v = R[l * nB + m];
+      if (v <= 0) continue;
+      const [cr, cg, cb] = colA(l);
+      r += v * cr;
+      g += v * cg;
+      b += v * cb;
+      w += v;
+    }
+    mass[m] = w;
+    if (w > 0) {
+      mix[m * 3] = r / w;
+      mix[m * 3 + 1] = g / w;
+      mix[m * 3 + 2] = b / w;
+    }
+  }
+  // opacity follows each cell's own evidence share (B side), so unrelated parts stay clear
+  const ev = gb.values;
+  const top = Math.max(1e-9, ...ev);
+  paintGrid(p, p.b, gb, (m) => [mix[m * 3], mix[m * 3 + 1], mix[m * 3 + 2], ev[m] > 0 ? 0.85 * strength * Math.min(1, (ev[m] / top) ** 0.35) : 0]);
+  return p;
+}
+
+/**
+ * Copied or just similar? Regions where the copy detector carries evidence
+ * and the look-alike model finds a counterpart are tinted red; regions the
+ * look-alike model matches but the copy detector does not support are amber.
+ */
+export function drawTwoLenses(bmA, bmB, v, { cssWidth, copyMin = 0.3, simMin = 0.6 } = {}) {
+  const p = stage(bmA, bmB, { cssWidth, gap: 40 });
+  const e = v.sscd;
+  const d = v.dino;
+  const sample = (grid, values, fx, fy) => {
+    const x = Math.min(grid.gw - 1, Math.max(0, fx * grid.gw - 0.5));
+    const y = Math.min(grid.gh - 1, Math.max(0, fy * grid.gh - 0.5));
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const x1 = Math.min(grid.gw - 1, x0 + 1);
+    const y1 = Math.min(grid.gh - 1, y0 + 1);
+    const tx = x - x0;
+    const ty = y - y0;
+    const at = (xx, yy) => values[yy * grid.gw + xx];
+    return (at(x0, y0) * (1 - tx) + at(x1, y0) * tx) * (1 - ty) + (at(x0, y1) * (1 - tx) + at(x1, y1) * tx) * ty;
+  };
+  const counts = { copied: [0, 0], similar: [0, 0] };
+  ['a', 'b'].forEach((side, si) => {
+    const rect = side === 'a' ? p.a : p.b;
+    const grid = d[side];
+    const evGrid = e[side];
+    const top = Math.max(1e-9, ...evGrid.values);
+    const copyOn = e.score >= 0.4;
+    paintGrid(p, rect, grid, (i) => {
+      const fx = ((i % grid.gw) + 0.5) / grid.gw;
+      const fy = (Math.floor(i / grid.gw) + 0.5) / grid.gh;
+      const sim = grid.values[i];
+      const copy = copyOn && sample(evGrid, evGrid.values, fx, fy) / top >= copyMin;
+      if (copy && sim >= simMin - 0.1) {
+        counts.copied[si]++;
+        return [239, 35, 60, 0.5];
+      }
+      if (sim >= simMin) {
+        counts.similar[si]++;
+        return [245, 158, 11, 0.45];
+      }
+      return [0, 0, 0, 0];
+    });
+  });
+  const n = (side) => d[side].gw * d[side].gh;
+  p.shares = {
+    copied: [counts.copied[0] / n('a'), counts.copied[1] / n('b')],
+    similar: [counts.similar[0] / n('a'), counts.similar[1] / n('b')],
+  };
+  return p;
+}
+
 /** Which annotation (by number) is under a click, if any. */
 export function hitTest(p, evt) {
   const rect = p.canvas.getBoundingClientRect();

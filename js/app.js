@@ -83,6 +83,7 @@ const state = {
   whereLens: null,
   whereChosen: false,
   probeSource: 'dino',
+  evidenceMode: 'arrows',
   openGroups: new Set(['neural', 'objects']),
   objectView: 'markup',
   objectHighlight: null,
@@ -660,10 +661,23 @@ function headline(results) {
   const v = (id) => results[id]?.value;
   const verdict = (id) => results[id]?.verdict;
   const has = (id) => typeof v(id) === 'number' && COUNTED.has(verdict(id));
-  const sscd = has('sscd') ? v('sscd') : null;
+  const whole = has('sscd') ? v('sscd') : null;
+  const aligned = has('sscdAligned') ? v('sscdAligned') : null;
+  // after undoing a crop or rotation, SSCD can see a copy the whole-image score misses
+  const useAligned = aligned !== null && (whole === null || aligned > whole + 0.05);
+  const sscd = useAligned ? aligned : whole;
+  const how = useAligned ? ` after lining B up with A (whole images: ${whole === null ? '—' : whole.toFixed(3)})` : '';
   const geomMatch = ['orb', 'akaze', 'brisk'].some((id) => verdict(id) === 'match');
   if (verdict('sha256') === 'identical') {
     return { tone: 'identical', title: 'Identical files', sub: 'The two files are byte-for-byte the same — a verbatim copy.' };
+  }
+  const stripped = results.cmi?.display === 'removed in B';
+  if (verdict('payload') === 'identical') {
+    return {
+      tone: 'identical',
+      title: stripped ? 'Same image, credits stripped' : 'Same image, different metadata',
+      sub: `The compressed picture is byte-for-byte identical; only the metadata differs${stripped ? ' — and B no longer carries A’s creator and copyright fields' : ''}.`,
+    };
   }
   if (verdict('pixels') === 'identical') {
     return { tone: 'identical', title: 'Identical pixels', sub: 'The files differ, but every decoded pixel is the same: the same image saved with different metadata or encoding.' };
@@ -671,11 +685,13 @@ function headline(results) {
   if (verdict('crop') === 'identical') {
     return { tone: 'identical', title: 'Verbatim crop', sub: `One image is an unaltered cut-out of the other (${results.crop.detail?.['best placement'] || ''}).` };
   }
+  const credits = stripped ? ' B also drops A’s creator and copyright fields.' : '';
+  const derived = verdict('lineage') === 'match' ? ` Its edit history agrees: ${results.lineage.display}.` : '';
   if (sscd !== null && sscd >= 0.75) {
-    return { tone: 'match', title: 'Copy detected', sub: `SSCD scores ${sscd.toFixed(3)}, above the 0.75 copy threshold: B looks like an edited copy of A.` };
+    return { tone: 'match', title: 'Copy detected', sub: `SSCD scores ${sscd.toFixed(3)}${how}, above the 0.75 copy threshold: B looks like an edited copy of A.${derived}${credits}` };
   }
   if (sscd !== null && sscd >= 0.5) {
-    return { tone: 'partial', title: 'Possible partial copy', sub: `SSCD scores ${sscd.toFixed(3)}: above 0.5, where Somepalli et al. found strong visual similarity and likely partial copies, but below the 0.75 copy threshold.` };
+    return { tone: 'partial', title: 'Possible partial copy', sub: `SSCD scores ${sscd.toFixed(3)}${how}: above 0.5, where Somepalli et al. found strong visual similarity and likely partial copies, but below the 0.75 copy threshold.${derived}${credits}` };
   }
   if (sscd === null && (verdict('pdq') === 'match' || verdict('pdqDihedral') === 'match' || geomMatch)) {
     return { tone: 'match', title: 'Likely copy', sub: 'Perceptual hashes or keypoint geometry indicate the same image (SSCD did not run).' };
@@ -877,7 +893,7 @@ const LENS_GROUPS = [
   {
     title: 'Marked up',
     note: 'Circles, numbers and arrows that point at what changed and what was carried over.',
-    ids: ['diff', 'evidence', 'regions', 'probe'],
+    ids: ['diff', 'evidence', 'regions', 'two', 'probe'],
   },
   {
     title: 'Same content?',
@@ -930,6 +946,13 @@ const VIEWS = {
     what: 'SSCD’s copy score is one number, but because the model adds up evidence from every location of each image, the score splits exactly into pairs: a location in A together with a location in B. Each part of A is joined to the part of B it pairs with most strongly; neighbouring parts that move together form one link, drawn in one colour with an arrow whose width is its share of the score. The bar underneath adds the links up to the score.',
     means: 'This is what the copy detector itself relied on — not a separate guess. Arrows that run parallel mean B reproduces A in place; arrows that cross mean a mirror image; arrows that fan out from a small part of A mean B is an enlarged crop. Evidence on a watermark, caption or border means the score may reflect that shared element more than the work itself.',
     ref: { label: 'Eberle et al., Building and Interpreting Deep Similarity Models (BiLRP), TPAMI 2020', url: 'https://arxiv.org/abs/2003.05431' },
+  },
+  two: {
+    label: 'Copied or similar?',
+    need: (v) => v.dino && v.sscd,
+    what: 'Two models look at every region. The copy detector (SSCD) says where its evidence for “B is a copy of A” comes from; the look-alike model (DINOv2) says whether the region has a close counterpart in the other image. Red marks regions where both agree; amber marks regions that look alike but carry no copy evidence.',
+    means: 'This is the idea/expression line in pictures. Amber regions share a subject, pose or composition — the kind of similarity two independent photographers can produce, and which copyright usually leaves free. Red regions are where the copy detector sees reproduced expression. The thresholds are heuristic: treat the map as a prompt for the filtration step, not as its answer.',
+    ref: { label: 'Somepalli et al., Diffusion Art or Digital Forgery? (CVPR 2023)', url: 'https://arxiv.org/abs/2212.03860' },
   },
   probe: {
     label: 'Point and compare',
@@ -1116,7 +1139,7 @@ function defaultLens(v, available) {
   return prefer.find((id) => available.includes(id));
 }
 
-const ANN_LENSES = new Set(['diff', 'regions', 'evidence', 'probe']);
+const ANN_LENSES = new Set(['diff', 'regions', 'evidence', 'probe', 'two']);
 
 function evidenceUnderlay(p) {
   const e = state.visuals.sscd;
@@ -1132,11 +1155,12 @@ function annotationNote(id) {
   const ann = v.annotations || {};
   if (id === 'diff') {
     const o = ann.overlap;
+    const mirrored = ann.mirrored ? 'B is a mirror image of A: it was flipped back before comparing. ' : '';
     const crop = o && o.coverA < 0.92 ? ` The dashed outline marks the ${Math.round(o.coverA * 100)}% of A that B shows; the arrows run from its corners to B’s corners.` : '';
-    if (ann.global) return `After alignment B differs from A almost everywhere (recoloured, filtered or redrawn), so there are no isolated spots to circle.${crop}`;
-    if (!ann.differences.length) return `After alignment no part of B differs from A beyond tiny shifts: as far as the pixels go, B is a faithful copy of A.${crop}`;
+    if (ann.global) return `${mirrored}After alignment B differs from A almost everywhere (recoloured, filtered or redrawn), so there are no isolated spots to circle.${crop}`;
+    if (!ann.differences.length) return `${mirrored}After alignment no part of B differs from A beyond tiny shifts: as far as the pixels go, B is a faithful copy of A.${crop}`;
     const n = ann.differences.length;
-    return `${n} difference${n === 1 ? '' : 's'} circled, largest first.${crop} Point at (or tap) a number to single it out.`;
+    return `${mirrored}${n} difference${n === 1 ? '' : 's'} circled, largest first.${crop} Point at (or tap) a number to single it out.`;
   }
   if (id === 'regions') {
     const n = ann.regions.length;
@@ -1145,10 +1169,11 @@ function annotationNote(id) {
     return `${whole ? 'Nearly all of A reappears in B. ' : ''}${n} matching region${n === 1 ? '' : 's'}, joined A → B; the percentage is how alike their patches are.${hatched} Point at (or tap) a region to follow its arrow.`;
   }
   if (id === 'probe') return 'Point at any part of either image (or tap it). The other image lights up wherever something resembles that spot, and the arrow lands on the closest match. Click to pin a point.';
+  if (id === 'two') return `Copy detector score ${v.sscd.score.toFixed(2)}${v.sscd.score < 0.4 ? ' — too low for any region to count as copied, so every match shows as “looks alike only”' : ''}. Red: copied; amber: looks alike only; clear: no counterpart.`;
   const e = v.sscd;
   const n = e.links?.links.length || 0;
   if (!n) return `SSCD score ${e.score.toFixed(3)}: ${e.score < 0.1 ? 'no copy evidence to trace.' : 'the evidence is spread thinly, with no part of A clearly supporting a part of B.'}`;
-  return `SSCD score ${e.score.toFixed(3)}, split exactly by which part of A pairs with which part of B. Each arrow’s width is its share of the score; matching colours mark the two halves of each pair.${e.score < 0.5 ? ' The score is low, so treat these as weak hints.' : ''}`;
+  return `SSCD score ${e.score.toFixed(3)}, split exactly by which part of A pairs with which part of B. ${state.evidenceMode === 'colour' ? 'Colour map: each part of B takes the colour of the parts of A it pairs with — a reversed rainbow means a mirror image, a stretched slice means a crop.' : 'Each arrow’s width is its share of the score; matching colours mark the two halves of each pair.'}${e.score < 0.5 ? ' The score is low, so treat these as weak hints.' : ''}`;
 }
 
 /** Where a box sits in its image, in words ("top left", "centre"). */
@@ -1328,6 +1353,7 @@ function probeView(cssWidth) {
 /** A marked-up view: annotated canvas plus a numbered list of close-ups. */
 function annotatedView(id, cssWidth) {
   if (id === 'probe') return probeView(cssWidth);
+  if (id === 'two') return twoLensView(cssWidth);
   const v = state.visuals;
   const ann = v.annotations || { differences: [], regions: [] };
   const A = state.slots.a.bitmap;
@@ -1419,6 +1445,7 @@ function annotatedView(id, cssWidth) {
   const draw = () => {
     if (id === 'diff') stageNow = AV.drawDifferences(A, B, ann, { cssWidth, focus });
     else if (id === 'regions') stageNow = AV.drawRegions(A, B, ann, { cssWidth, focus, unmatched });
+    else if (state.evidenceMode === 'colour' && v.sscd.pairs) stageNow = AV.drawColourMap(A, B, v.sscd, { cssWidth });
     else stageNow = AV.drawCopyLinks(A, B, v.sscd, { cssWidth, focus, underlay: evidenceUnderlay });
     stageNow.canvas.onclick = (e) => {
       const n = AV.hitTest(stageNow, e);
@@ -1435,13 +1462,54 @@ function annotatedView(id, cssWidth) {
     draw();
   }
   draw();
-  return el('div', { class: `ann-view ann-${id}` }, holder, id === 'evidence' ? scoreBreakdown(v.sscd) : '', items.length ? list : '');
+  const modes =
+    id === 'evidence' && v.sscd?.pairs
+      ? el(
+          'div',
+          { class: 'lens-pills probe-pills' },
+          [
+            ['arrows', 'Arrows'],
+            ['colour', 'Colour map'],
+          ].map(([m, label]) =>
+            el(
+              'button',
+              {
+                type: 'button',
+                class: 'pill',
+                'aria-pressed': String((state.evidenceMode || 'arrows') === m),
+                onclick: (e) => {
+                  state.evidenceMode = m;
+                  for (const b of e.currentTarget.parentElement.children) b.setAttribute('aria-pressed', String(b === e.currentTarget));
+                  draw();
+                },
+              },
+              label,
+            ),
+          ),
+        )
+      : '';
+  return el('div', { class: `ann-view ann-${id}` }, modes, holder, id === 'evidence' ? scoreBreakdown(v.sscd) : '', items.length ? list : '');
+}
+
+/** Copied or just similar? The copy detector's evidence against the look-alike model's matches. */
+function twoLensView(cssWidth) {
+  const v = state.visuals;
+  const st = AV.drawTwoLenses(state.slots.a.bitmap, state.slots.b.bitmap, v, { cssWidth });
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  const legend = el(
+    'div',
+    { class: 'two-legend' },
+    el('span', {}, el('i', { class: 'sw-copied' }), el('b', {}, 'Copied'), ` — the copy detector’s evidence sits here and the look-alike model finds a counterpart (${pct(st.shares.copied[0])} of A, ${pct(st.shares.copied[1])} of B)`),
+    el('span', {}, el('i', { class: 'sw-similar' }), el('b', {}, 'Looks alike only'), ` — a counterpart exists, but the copy detector does not count it as copied: same subject, pose or idea (${pct(st.shares.similar[0])} of A, ${pct(st.shares.similar[1])} of B)`),
+  );
+  return el('div', { class: 'ann-view ann-two' }, el('div', { class: 'ann-stage' }, st.canvas), legend);
 }
 
 const WHERE_LENSES = [
   { id: 'diff', label: 'Differences', need: (v) => v.annotations?.aligned },
   { id: 'evidence', label: 'Copy evidence', need: (v) => v.sscd?.links },
   { id: 'regions', label: 'Matching regions', need: (v) => v.annotations?.regions?.length },
+  { id: 'two', label: 'Copied or similar?', need: (v) => v.dino && v.sscd },
   { id: 'probe', label: 'Point and compare', need: (v) => v.dino?.featsA || v.sscd?.pairs },
 ];
 
@@ -2453,6 +2521,7 @@ function init() {
   });
   refreshDownloadNote();
   updateButtons();
+  if ($('#testCount')) $('#testCount').textContent = String(ENGINES.length);
   if (new URLSearchParams(location.search).has('debug')) window.scanner = { state, report };
   // the catalogue is built at runtime, so honour #anchors once it exists
   if (location.hash) document.querySelector(location.hash)?.scrollIntoView();

@@ -3,3 +3,5 @@
 _testfiles/
 __pycache__/
 *.pyc
+tools/bench/img/
+tools/bench/*.json

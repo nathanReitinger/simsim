@@ -3,7 +3,7 @@
 
 import { ENGINE_BY_ID, verdictFor } from './engines.js';
 import { md5, sha } from './lib/digest.js';
-import { fitWithin, grayPIL, lumaFloat, resizeImg, rgbaToRgb } from './lib/pixels.js';
+import { cropImg, fitWithin, grayPIL, lumaFloat, resizeImg, rgbaToRgb } from './lib/pixels.js';
 import * as H from './lib/hashes.js';
 import * as Q from './lib/iqa.js';
 import * as G from './lib/histogram.js';
@@ -11,6 +11,7 @@ import * as F from './lib/features.js';
 import * as N from './lib/neural.js';
 import * as O from './lib/objects.js';
 import * as Ann from './lib/annotate.js';
+import * as P from './lib/provenance.js';
 import { grayToRgba, heatmap, rgbToRgba } from './lib/colormap.js';
 import exifr from '../vendor/exifr/exifr.full.esm.js';
 
@@ -22,13 +23,13 @@ const LPIPS_MAX = 256;
 const CROP_MAX = 640; // template search
 
 const ORDER = [
-  'sha256', 'sha1', 'md5', 'pixels',
+  'sha256', 'sha1', 'md5', 'payload', 'pixels',
   'pdq', 'pdqDihedral', 'phash', 'dhash', 'ahash', 'whash', 'blockhash',
-  'ssim', 'msssim', 'psnr', 'ncc', 'uqi', 'gmsd', 'deltaE', 'changed',
+  'ssim', 'msssim', 'psnr', 'ncc', 'uqi', 'gmsd', 'deltaE', 'changed', 'carlini',
   'histCorrel', 'histChi', 'histIntersect', 'histBhatt', 'lumaEmd',
-  'exif',
+  'exif', 'cmi', 'lineage', 'jpegq', 'thumbnail',
   'crop', 'orb', 'akaze', 'brisk', 'alignedSsim',
-  'sscd', 'sscdLarge', 'dino', 'clip', 'lpips',
+  'sscd', 'sscdAligned', 'sscdLarge', 'dino', 'clip', 'lpips',
   'objects',
 ];
 
@@ -147,7 +148,19 @@ async function prepare(input) {
   } catch {
     exif = null;
   }
-  return { name: input.name, type: input.type, size: bytes.length, bytes, w, h, rgba, hasAlpha, work, exif: exif || null };
+  // provenance: container structure, namespaced metadata, embedded thumbnail
+  let prov = null;
+  try {
+    const info = await P.parseContainer(bytes);
+    const meta = await exifr
+      .parse(bytes, { tiff: true, ifd0: true, exif: true, xmp: true, iptc: true, icc: false, gps: false, interop: false, makerNote: false, userComment: false, mergeOutput: false })
+      .catch(() => null);
+    const thumb = await exifr.thumbnail(bytes).catch(() => null);
+    prov = { info, meta: meta || null, thumb: thumb && thumb.length ? new Uint8Array(thumb) : null };
+  } catch (err) {
+    console.warn('provenance parsing failed', err);
+  }
+  return { name: input.name, type: input.type, size: bytes.length, bytes, w, h, rgba, hasAlpha, work, exif: exif || null, prov };
 }
 
 // ---------------------------------------------------------------- context
@@ -293,10 +306,33 @@ function workHomography(c) {
   const best = Object.values(c.features)
     .filter((r) => r.sane && r.inliers >= 20)
     .sort((x, y) => y.inliers - x.inliers)[0];
-  if (!best) return null;
   const sa = c.featureImg('a').w / c.a.work.w;
   const sb = c.featureImg('b').w / c.b.work.w;
-  return mat3(mat3(scale3(1 / sa), best.H), scale3(sb));
+  if (best) return mat3(mat3(scale3(1 / sa), best.H), scale3(sb));
+  if (!c.mirror) return null;
+  // B matches only as a mirror image: flip B's feature coordinates first
+  const fw = c.featureImg('b').w;
+  const flip = [-1, 0, fw - 1, 0, 1, 0, 0, 0, 1];
+  return mat3(mat3(scale3(1 / sa), mat3(c.mirror.H, flip)), scale3(sb));
+}
+
+/** When no transform maps B onto A, try B mirrored left to right. */
+async function mirrorCheck(c) {
+  c.mirror = null;
+  if (Object.values(c.features).some((r) => r.sane && r.inliers >= 20)) return;
+  const fb = c.featureImg('b');
+  const gray = new Uint8Array(fb.gray.length);
+  for (let y = 0; y < fb.h; y++) {
+    const row = y * fb.w;
+    for (let x = 0; x < fb.w; x++) gray[row + x] = fb.gray[row + fb.w - 1 - x];
+  }
+  const cv = await loadOpenCV();
+  let best = null;
+  for (const kind of ['orb', 'akaze']) {
+    const r = F.matchFeatures(cv, c.featureImg('a'), { w: fb.w, h: fb.h, gray }, kind);
+    if (r.sane && r.inliers >= 20 && (!best || r.inliers > best.inliers)) best = { H: r.H, inliers: r.inliers, kind };
+  }
+  c.mirror = best;
 }
 
 function objectVerdict(aligned, m) {
@@ -482,6 +518,25 @@ const RUN = {
   sha1: async (c) => exact(await sha('SHA-1', c.a.bytes), await sha('SHA-1', c.b.bytes)),
   md5: (c) => exact(md5(c.a.bytes), md5(c.b.bytes)),
 
+  async payload(c) {
+    // the encoded image data with every metadata segment set aside
+    const pa = c.a.prov?.info;
+    const pb = c.b.prov?.info;
+    if (!pa?.payload || !pb?.payload) return { verdict: 'na', display: 'n/a', note: 'Only JPEG, PNG and WebP files can be split into image data and metadata.' };
+    if (pa.format !== pb.format) return { verdict: 'none', display: 'different formats', detail: { A: pa.format.toUpperCase(), B: pb.format.toUpperCase() } };
+    const [ha, hb] = await Promise.all([P.payloadHash(pa), P.payloadHash(pb)]);
+    const same = ha && hb && ha.hex === hb.hex;
+    const metaA = c.a.size - ha.bytes;
+    const metaB = c.b.size - hb.bytes;
+    const fileSame = c.a.size === c.b.size && c.a.bytes.every((v, i) => v === c.b.bytes[i]);
+    return {
+      verdict: same ? 'identical' : 'none',
+      display: same ? (fileSame ? 'identical' : 'identical — only metadata differs') : 'different',
+      detail: { 'image data A / B': `${ha.bytes.toLocaleString()} / ${hb.bytes.toLocaleString()} bytes`, 'metadata and headers A / B': `${metaA.toLocaleString()} / ${metaB.toLocaleString()} bytes`, 'segments A': pa.segments.join(' '), 'segments B': pb.segments.join(' ') },
+      note: same && !fileSame ? 'The compressed picture is byte-for-byte the same; only metadata (credits, camera data, edit history) was added, changed or removed. B was not re-saved.' : undefined,
+    };
+  },
+
   pixels(c) {
     const { a, b } = c;
     if (a.w !== b.w || a.h !== b.h) {
@@ -570,6 +625,157 @@ const RUN = {
     let n = 0;
     for (const v of m) if (v > 5) n++;
     return { value: n / m.length, note: c.aspectNote() };
+  },
+
+  cmi(c) {
+    // copyright management information: who the files credit, and whether B kept it
+    const fa = P.cmiFields(c.a.prov?.meta);
+    const fb = P.cmiFields(c.b.prov?.meta);
+    const ka = Object.keys(fa);
+    const kb = Object.keys(fb);
+    const detail = {};
+    for (const k of new Set([...ka, ...kb])) detail[k] = `A: ${fa[k] || '—'} · B: ${fb[k] || '—'}`;
+    if (!ka.length && !kb.length) return { verdict: 'na', display: 'none in either file', note: 'Neither file carries creator, copyright or credit fields.' };
+    if (!ka.length) return { verdict: 'none', display: 'only B credits anyone', detail };
+    const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const kept = ka.filter((k) => fb[k] && (norm(fb[k]).includes(norm(fa[k])) || norm(fa[k]).includes(norm(fb[k]))));
+    const removed = ka.filter((k) => !fb[k]);
+    if (kept.length === ka.length) return { verdict: 'match', display: 'same credits', detail };
+    if (!kb.length) {
+      return {
+        verdict: 'none',
+        display: 'removed in B',
+        detail,
+        note: `A credits ${fa.creator || fa.credit || 'its author'}${fa.rights ? ` (“${fa.rights}”)` : ''}; B carries no credit or copyright fields at all. Removing copyright management information can be a separate violation (17 U.S.C. § 1202), though metadata is also routinely stripped by websites and apps.`,
+      };
+    }
+    return { verdict: kept.length ? 'partial' : 'none', display: kept.length ? `${removed.length ? 'some removed' : 'some changed'}` : 'different credits', detail };
+  },
+
+  lineage(c) {
+    // XMP edit history: does either file say it was made from the other?
+    const la = P.lineage(c.a.prov?.meta);
+    const lb = P.lineage(c.b.prov?.meta);
+    const idsA = [la.documentID, la.instanceID, la.originalID].filter(Boolean);
+    const idsB = [lb.documentID, lb.instanceID, lb.originalID].filter(Boolean);
+    const genA = P.generatorText(c.a.prov?.info);
+    const genB = P.generatorText(c.b.prov?.info);
+    const detail = {};
+    const show = (l, gen, side) => {
+      const parts = [l.tool && `made with ${l.tool}`, l.documentID && `ID ${l.documentID}`, l.derived.length && `derived from ${l.derived.join(', ')}`, l.sourceType && `source type: ${l.sourceType}`, gen && `${gen.tool} settings: ${gen.text.slice(0, 160)}`].filter(Boolean);
+      detail[side] = parts.join(' · ') || 'no edit history';
+      if (l.history.length) detail[`history ${side}`] = l.history.slice(-4).join(' → ');
+    };
+    show(la, genA, 'A');
+    show(lb, genB, 'B');
+    const refs = (l) => [...l.derived, ...l.ancestors, ...l.ingredients];
+    const bFromA = refs(lb).some((id) => idsA.includes(id));
+    const aFromB = refs(la).some((id) => idsB.includes(id));
+    const sameOrigin = la.originalID && la.originalID === lb.originalID;
+    if (bFromA) return { verdict: 'match', display: 'B says it came from A', detail, note: 'B’s own edit history (XMP DerivedFrom / DocumentAncestors) names A’s document ID. Like all metadata it can be edited, but it is rarely faked.' };
+    if (aFromB) return { verdict: 'match', display: 'A says it came from B', detail };
+    if (sameOrigin) return { verdict: 'match', display: 'same original document', detail, note: 'Both files carry the same OriginalDocumentID: they are versions of one original.' };
+    if (!idsA.length && !idsB.length && !genA && !genB) return { verdict: 'na', display: 'no edit history', detail, note: 'Neither file carries XMP document IDs or generator settings.' };
+    return { verdict: 'none', display: 'no link', detail };
+  },
+
+  jpegq(c) {
+    // which encoder settings last saved each file
+    const a = c.a.prov?.info;
+    const b = c.b.prov?.info;
+    if (a?.format !== 'jpeg' || b?.format !== 'jpeg') return { verdict: 'na', display: 'n/a', note: 'Needs two JPEG files.' };
+    const describe = (x) => `quality ≈ ${x.quality}${x.standardTables ? ' (standard libjpeg tables)' : ' (custom tables)'} · ${x.subsampling} · ${x.progressive ? 'progressive' : 'baseline'}`;
+    const same = P.sameTables(a, b) && a.subsampling === b.subsampling;
+    return {
+      verdict: same ? 'match' : 'none',
+      display: same ? `same tables (q≈${a.quality})` : `q≈${a.quality} vs q≈${b.quality}`,
+      detail: { A: describe(a), B: describe(b) },
+      note: same
+        ? 'Identical quantization tables: both were saved by the same kind of encoder at the same setting.'
+        : b.quality < a.quality
+          ? 'B was saved at a lower quality — consistent with (but not proof of) B being a re-save of A.'
+          : undefined,
+    };
+  },
+
+  async thumbnail(c) {
+    // embedded EXIF previews: do they show their own picture, or the other one?
+    const ta = c.a.prov?.thumb;
+    const tb = c.b.prov?.thumb;
+    if (!ta && !tb) return { verdict: 'na', display: 'no thumbnails', note: 'Neither file embeds an EXIF preview image.' };
+    const decode = async (bytes) => {
+      const bm = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
+      const cv = new OffscreenCanvas(bm.width, bm.height);
+      const g = cv.getContext('2d');
+      g.drawImage(bm, 0, 0);
+      const d = g.getImageData(0, 0, bm.width, bm.height).data;
+      bm.close();
+      return rgbaToRgb(d, cv.width, cv.height);
+    };
+    const dist = (x, y) => H.hamming(x, y);
+    const hA = c.hash('a', 'dhash');
+    const hB = c.hash('b', 'dhash');
+    const detail = {};
+    let cross = false;
+    let stale = false;
+    for (const [side, t, own, other] of [
+      ['A', ta, hA, hB],
+      ['B', tb, hB, hA],
+    ]) {
+      if (!t) continue;
+      const th = H.differenceHash(await decode(t));
+      const dOwn = dist(th, own);
+      const dOther = dist(th, other);
+      detail[`${side}’s preview`] = `${dOwn <= 10 ? 'matches' : 'does not match'} its own picture (${dOwn} bits) · ${dOther <= 10 ? 'matches' : 'differs from'} the other picture (${dOther} bits)`;
+      if (dOwn > 10) stale = true;
+      if (dOther <= 10 && dOther < dOwn) cross = true;
+    }
+    return {
+      verdict: cross ? 'match' : 'none',
+      display: cross ? 'preview shows the other image' : stale ? 'stale preview' : 'previews match their own images',
+      detail,
+      note: cross
+        ? 'One file’s embedded preview shows the other picture, not itself: it was probably edited from that picture without regenerating the preview.'
+        : stale
+          ? 'An embedded preview does not match its own picture: the image was edited after the preview was written (a crop, for example).'
+          : undefined,
+    };
+  },
+
+  carlini(c) {
+    // Carlini et al. (2023): both images at 512×512, split into 16 tiles of
+    // 128×128; the distance is the largest per-tile RMS difference (pixels in
+    // [0, 1]). At or below 0.15 they counted a generation as "extracted".
+    const S = 512;
+    const A = resizeImg(c.a.work, S, S, 'bilinear');
+    const B = resizeImg(c.b.work, S, S, 'bilinear');
+    const tiles = [];
+    for (let ty = 0; ty < 4; ty++) {
+      for (let tx = 0; tx < 4; tx++) {
+        let sum = 0;
+        for (let y = ty * 128; y < ty * 128 + 128; y++) {
+          for (let x = tx * 128; x < tx * 128 + 128; x++) {
+            const o = (y * S + x) * 3;
+            for (let k = 0; k < 3; k++) {
+              const d = (A.rgb[o + k] - B.rgb[o + k]) / 255;
+              sum += d * d;
+            }
+          }
+        }
+        tiles.push(Math.sqrt(sum / (128 * 128 * 3)));
+      }
+    }
+    const worst = tiles.indexOf(Math.max(...tiles));
+    const rows = ['top', 'upper middle', 'lower middle', 'bottom'];
+    const cols = ['left', 'centre-left', 'centre-right', 'right'];
+    return {
+      value: tiles[worst],
+      detail: {
+        'worst tile': `${rows[Math.floor(worst / 4)]} ${cols[worst % 4]} (${tiles[worst].toFixed(3)})`,
+        'median tile': [...tiles].sort((x, y) => x - y)[7].toFixed(3),
+      },
+      note: c.aspectNote(),
+    };
   },
 
   histCorrel: (c) => ({ value: G.correlation(...c.hist('hs')) }),
@@ -695,6 +901,59 @@ const RUN = {
     };
     return { value };
   },
+  async sscdAligned(c) {
+    // SSCD on the shared region only, after undoing B's crop, rotation or
+    // perspective with the keypoint transform: a copy pasted into a larger
+    // picture, or rotated, is compared like for like.
+    const Hw = workHomography(c);
+    if (!Hw) return { verdict: 'na', display: 'n/a', note: 'No consistent keypoint transform was found, so there was nothing to undo.' };
+    const A = c.a.work;
+    const [w, h] = fitWithin(A.w, A.h, 640);
+    const k = w / A.w;
+    const cv = await loadOpenCV();
+    const warped = F.warpRgbInto(cv, c.b.work, mat3(scale3(k), Hw), w, h);
+    const Ad = resizeImg(A, w, h, 'bilinear');
+    let x0 = w;
+    let y0 = h;
+    let x1 = -1;
+    let y1 = -1;
+    let covered = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!warped.mask[y * w + x]) continue;
+        covered++;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+    const coverage = covered / (w * h);
+    if (coverage < 0.05) return { verdict: 'na', display: 'n/a', note: 'The aligned images barely overlap.' };
+    // the same region of both, grey wherever B does not reach
+    const bw = x1 - x0 + 1;
+    const bh = y1 - y0 + 1;
+    const ca = cropImg(Ad, x0, y0, bw, bh);
+    const cb = cropImg(warped.img, x0, y0, bw, bh);
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        if (warped.mask[(y + y0) * w + x + x0]) continue;
+        const o = (y * bw + x) * 3;
+        ca.rgb[o] = ca.rgb[o + 1] = ca.rgb[o + 2] = 128;
+        cb.rgb[o] = cb.rgb[o + 1] = cb.rgb[o + 2] = 128;
+      }
+    }
+    const [ort, s] = await Promise.all([loadOrt(), session('sscd')]);
+    const value = N.cosine(await N.embed(ort, s, 'sscd', ca), await N.embed(ort, s, 'sscd', cb));
+    const global = c.results?.sscd?.value;
+    return {
+      value,
+      detail: {
+        'compared region': `${Math.round(coverage * 100)}% of A (where B lands after alignment)`,
+        'SSCD on the whole images': typeof global === 'number' ? global.toFixed(3) : '—',
+      },
+    };
+  },
   sscdLarge: (c) => embedCompare(c, 'sscdLarge'),
   async dino(c) {
     const r = await embedCompare(c, 'dino');
@@ -784,6 +1043,7 @@ async function buildAnnotations(c) {
   const pixelClose = (R.ssim?.value ?? 0) >= 0.5 || (R.pdq?.value ?? 256) <= 63;
   if (!Hw && sameShape && pixelClose) Hw = [A.w / B.w, 0, 0, 0, A.h / B.h, 0, 0, 0, 1];
   const keypointH = workHomography(c);
+  out.mirrored = !!(keypointH && c.mirror && !Object.values(c.features).some((r) => r.sane && r.inliers >= 20));
   if (keypointH) {
     // which part of each image the other one shows (B's frame drawn on A, and A's on B)
     const apply = (M, x, y) => {
@@ -950,6 +1210,7 @@ async function scan({ scanId, a, b, disabled }) {
     c.results[id] = result;
     if (scanId !== currentScan) return;
     post({ type: 'result', scanId, id, result });
+    if (id === 'brisk') await mirrorCheck(c).catch((err) => console.warn('mirror check failed', err));
     await tick();
   }
 
