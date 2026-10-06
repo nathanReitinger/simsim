@@ -1026,6 +1026,91 @@ export function drawTwoLenses(bmA, bmB, v, { cssWidth, copyMin = 0.3, simMin = 0
   return p;
 }
 
+const LIMBS = [
+  [5, 7], [7, 9], [6, 8], [8, 10], [5, 6], [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [0, 1], [0, 2], [1, 3], [2, 4],
+];
+
+function skeleton(p, rect, s, k, color, { dashed = false, alpha = 1, minConf = 0.3, dots = true } = {}) {
+  const { g, u } = p;
+  const at = (j) => [rect.x + k[j][0] * s, rect.y + k[j][1] * s];
+  g.save();
+  g.globalAlpha = alpha;
+  g.lineCap = 'round';
+  for (const [a, b] of LIMBS) {
+    if (k[a][2] < minConf || k[b][2] < minConf) continue;
+    for (const [stroke, w] of [
+      ['rgba(255,255,255,0.9)', 7],
+      [color, 3.6],
+    ]) {
+      g.beginPath();
+      g.setLineDash(dashed && stroke === color ? [7 * u, 5 * u] : []);
+      g.moveTo(...at(a));
+      g.lineTo(...at(b));
+      g.strokeStyle = stroke;
+      g.lineWidth = w * u;
+      g.stroke();
+    }
+  }
+  g.setLineDash([]);
+  if (dots) {
+    for (let j = 0; j < k.length; j++) {
+      if (k[j][2] < minConf) continue;
+      g.beginPath();
+      g.arc(...at(j), 4.2 * u, 0, Math.PI * 2);
+      g.fillStyle = color;
+      g.fill();
+      g.lineWidth = 1.6 * u;
+      g.strokeStyle = '#fff';
+      g.stroke();
+    }
+  }
+  g.restore();
+}
+
+/**
+ * Pose view: every person's skeleton on both images; for the best-matching
+ * pair, B's pose is laid over A's (dashed, after Procrustes alignment) and
+ * each joint of A is coloured by how closely B's joint lands on it.
+ */
+export function drawPose(bmA, bmB, pose, { cssWidth } = {}) {
+  const p = stage(bmA, bmB, { cssWidth, gap: 64 });
+  p.g.save();
+  p.g.fillStyle = 'rgba(8, 12, 22, 0.25)';
+  p.g.fillRect(p.a.x, p.a.y, p.a.w, p.a.h);
+  p.g.fillRect(p.b.x, p.b.y, p.b.w, p.b.h);
+  p.g.restore();
+  const best = pose.best;
+  pose.a.forEach((x, i) => i !== best.ia && skeleton(p, p.a, p.a.s, x.k, '#94a3b8', { alpha: 0.7 }));
+  pose.b.forEach((x, i) => i !== best.ib && skeleton(p, p.b, p.b.s, x.k, '#94a3b8', { alpha: 0.7 }));
+  const A = pose.a[best.ia];
+  const B = pose.b[best.ib];
+  skeleton(p, p.b, p.b.s, B.k, '#2563eb');
+  skeleton(p, p.a, p.a.s, A.k, '#2563eb', { dots: false });
+  // B's pose mapped onto A's person
+  const mapped = best.joints.map((j) => (j ? [j.at[0], j.at[1], 1] : [0, 0, 0]));
+  skeleton(p, p.a, p.a.s, mapped, '#f59e0b', { dashed: true, dots: false });
+  best.joints.forEach((j, i) => {
+    if (!j) return;
+    const [x, y] = [p.a.x + A.k[i][0] * p.a.s, p.a.y + A.k[i][1] * p.a.s];
+    p.g.beginPath();
+    p.g.arc(x, y, 5 * p.u, 0, Math.PI * 2);
+    p.g.fillStyle = j.e >= 0.6 ? '#16a34a' : j.e >= 0.3 ? '#f59e0b' : '#ef233c';
+    p.g.fill();
+    p.g.lineWidth = 1.8 * p.u;
+    p.g.strokeStyle = '#fff';
+    p.g.stroke();
+  });
+  // arrow from A's person to B's
+  const boxE = (box, r) => ({ cx: r.x + ((box[0] + box[2]) / 2) * r.s, cy: r.y + ((box[1] + box[3]) / 2) * r.s, rx: ((box[2] - box[0]) / 2) * r.s, ry: ((box[3] - box[1]) / 2) * r.s });
+  const ea = boxE(A.box, p.a);
+  const eb = boxE(B.box, p.b);
+  const mid = curvedArrow(p, [ea.cx + ea.rx * 0.9, ea.cy - ea.ry * 0.5], [eb.cx - eb.rx * 0.9, eb.cy - eb.ry * 0.5], '#2563eb', { bend: -0.18, width: 3 });
+  const text = `pose ${Math.round(best.similarity * 100)}%${best.mirrored ? ' · mirrored' : ''}`;
+  const { w, h } = pillSize(p, text, 12);
+  p.placed.push(drawPill(p, Math.max(2, Math.min(p.canvas.width - w - 2, mid[0] - w / 2)), Math.max(2, mid[1] - h - 6 * p.u), text, '#2563eb', 12, { solid: true }));
+  return p;
+}
+
 /** Which annotation (by number) is under a click, if any. */
 export function hitTest(p, evt) {
   const rect = p.canvas.getBoundingClientRect();

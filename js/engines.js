@@ -232,6 +232,28 @@ export const ENGINES = [
     pipeline: 'Each image resized to 640×640; detections above 0.35 confidence; duplicates suppressed so each object keeps one label.',
   },
 
+  {
+    id: 'pose',
+    group: 'objects',
+    name: 'Body pose similarity',
+    by: 'ViTPose-B (NeurIPS 2022) · 17 joints · Procrustes + OKS',
+    metric: 'pose similarity of the best-matching people (0–1)',
+    better: 'higher',
+    match: 0.8,
+    partial: 0.55,
+    format: f2,
+    model: 'pose',
+    about:
+      'Finds 17 body joints (eyes, shoulders, elbows, wrists, hips, knees, ankles) for each person the object detector found, then compares poses after removing position, size and rotation — and also against the mirror image. Each joint scores by how far it lands from its counterpart, relative to the size of the body (the COCO keypoint similarity). The overlay draws one pose on top of the other.',
+    thresholds: '≥ 0.80: the same pose. 0.55–0.80: a similar pose (a staged recreation scores about 0.57). Below 0.55: different poses. Calibrated on a handful of pairs — a heuristic scale.',
+    robust: ['scaling', 'mirroring', 'restyled or restaged photos', 'different people'],
+    weak: ['hidden or cut-off limbs', 'crowds', 'unusual viewpoints'],
+    refs: [
+      { label: 'Xu et al., ViTPose, NeurIPS 2022', url: 'https://arxiv.org/abs/2204.12484' },
+      { label: 'Rentmeester v. Nike, 883 F.3d 1111 (9th Cir. 2018)', url: 'https://cdn.ca9.uscourts.gov/datastore/opinions/2018/02/27/15-35509.pdf' },
+    ],
+  },
+
   // ------------------------------------------------------------ exact
   {
     id: 'sha256',

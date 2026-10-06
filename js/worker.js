@@ -14,6 +14,7 @@ import * as Ann from './lib/annotate.js';
 import * as P from './lib/provenance.js';
 import { detectSDWatermark } from './lib/watermark.js';
 import * as X from './lib/xfeat.js';
+import * as Pose from './lib/pose.js';
 import { grayToRgba, heatmap, rgbToRgba } from './lib/colormap.js';
 import exifr from '../vendor/exifr/exifr.full.esm.js';
 
@@ -32,11 +33,22 @@ const ORDER = [
   'exif', 'cmi', 'lineage', 'jpegq', 'thumbnail', 'sdmark',
   'crop', 'orb', 'akaze', 'brisk', 'xfeat', 'alignedSsim',
   'sscd', 'sscdAligned', 'sscdLarge', 'dino', 'clip', 'dreamsim', 'lpips',
-  'objects',
+  'objects', 'pose',
 ];
 
 const post = (msg, transfer = []) => self.postMessage(msg, transfer);
-const tick = () => new Promise((r) => setTimeout(r, 0));
+// Yield to the event loop between tests (so a cancel can arrive) without a
+// timer: browsers clamp timers in background tabs, which made scans crawl
+// when the tab was hidden; a message round-trip is not throttled.
+const tick = () =>
+  new Promise((r) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => {
+      ch.port1.close();
+      r();
+    };
+    ch.port2.postMessage(0);
+  });
 
 // ---------------------------------------------------------------- runtimes
 
@@ -977,6 +989,63 @@ const RUN = {
   },
 
   objects: (c) => compareObjects(c),
+
+  async pose(c) {
+    // body poses of the people the object detector found (largest three per image)
+    const people = (side) => {
+      const img = c[side].work;
+      return (c.objectDets?.[side] || [])
+        .filter((d) => /person/i.test(d.label) && (d.box[2] - d.box[0]) * (d.box[3] - d.box[1]) >= 0.02 * img.w * img.h)
+        .sort((p, q) => (q.box[2] - q.box[0]) * (q.box[3] - q.box[1]) - (p.box[2] - p.box[0]) * (p.box[3] - p.box[1]))
+        .slice(0, 3);
+    };
+    const pa = people('a');
+    const pb = people('b');
+    if (!c.objectDets) return { verdict: 'na', display: 'n/a', note: 'Needs the object detector (D-FINE) to find people first.' };
+    if (!pa.length || !pb.length) return { verdict: 'na', display: 'no people in both', note: 'Pose comparison needs at least one person in each image.' };
+    const [ort, s] = await Promise.all([loadOrt(), session('pose')]);
+    const estimate = async (side, list) => {
+      const out = [];
+      for (const d of list) {
+        const inp = Pose.poseInput(c[side].work, d.box);
+        const r = await s.run({ pixel_values: new ort.Tensor('float32', inp.data, inp.dims) });
+        out.push({ box: d.box, k: Pose.decodeHeatmaps(r.heatmaps.data, r.heatmaps.dims, inp) });
+      }
+      return out;
+    };
+    const sa = await estimate('a', pa);
+    const sb = await estimate('b', pb);
+    let best = null;
+    const all = [];
+    sa.forEach((x, i) =>
+      sb.forEach((y, j) => {
+        const r = Pose.compareSkeletons(x.k, y.k);
+        if (!r) return;
+        all.push(`A${i + 1}–B${j + 1}: ${r.similarity.toFixed(2)}${r.mirrored ? ' (mirrored)' : ''}`);
+        if (!best || r.similarity > best.similarity) best = { ...r, ia: i, ib: j };
+      }),
+    );
+    if (!best) return { verdict: 'na', display: 'joints not visible', note: 'Too few joints were visible in both images to compare poses.' };
+    // to original pixels for drawing; B's joints also mapped into A's frame (the overlay)
+    const kA = c.a.w / c.a.work.w;
+    const kB = c.b.w / c.b.work.w;
+    const scaleK = (k, f) => k.map(([x, y, p]) => [x * f, y * f, p]);
+    c.visuals.pose = {
+      a: sa.map((x) => ({ box: x.box.map((v) => v * kA), k: scaleK(x.k, kA) })),
+      b: sb.map((x) => ({ box: x.box.map((v) => v * kB), k: scaleK(x.k, kB) })),
+      best: {
+        ia: best.ia,
+        ib: best.ib,
+        similarity: best.similarity,
+        mirrored: best.mirrored,
+        joints: best.perJoint.map((j) => (j ? { e: j.e, at: [j.at[0] * kA, j.at[1] * kA] } : null)),
+      },
+    };
+    return {
+      value: best.similarity,
+      detail: { 'best pair': `person ${best.ia + 1} in A and person ${best.ib + 1} in B${best.mirrored ? ' (mirror image)' : ''}`, 'joints compared': best.joints, 'all pairs': all.join(' · ') },
+    };
+  },
   async sscd(c) {
     // SSCD with per-region evidence: the cells of each map add up to the score.
     const [ort, s] = await Promise.all([loadOrt(), session('sscd')]);

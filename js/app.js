@@ -31,7 +31,7 @@ function el(tag, attrs = {}, ...children) {
 
 const COUNTED = new Set(['identical', 'match', 'partial', 'none']);
 const FLAGGED = new Set(['identical', 'match']);
-const MODEL_ORDER = ['sscd', 'xfeat', 'lpips', 'dino', 'dfine', 'sscdLarge', 'clip', 'dreamsim'];
+const MODEL_ORDER = ['sscd', 'xfeat', 'lpips', 'dino', 'dfine', 'sscdLarge', 'clip', 'dreamsim', 'pose'];
 const MODEL_INFO = {
   sscd: { name: 'SSCD (ResNet-50)', note: 'The main copy detector. Recommended.' },
   sscdLarge: { name: 'SSCD large (ResNeXt-101)', note: 'Replication-study setting from Somepalli et al.' },
@@ -40,6 +40,7 @@ const MODEL_INFO = {
   lpips: { name: 'LPIPS (AlexNet)', note: 'Perceptual distance; tiny.' },
   xfeat: { name: 'XFeat keypoints', note: 'Learned keypoints for aligning copies; tiny.' },
   dreamsim: { name: 'DreamSim', note: 'Similarity as people judge it; a large download.' },
+  pose: { name: 'ViTPose (body pose)', note: 'Compares the poses of the people in both images; a large download.' },
   dfine: { name: 'D-FINE object detector', note: 'Finds hats, pictures, tables… for the Objects tab.' },
 };
 const ICONS = {
@@ -996,7 +997,7 @@ const LENS_GROUPS = [
   {
     title: 'Marked up',
     note: 'Circles, numbers and arrows that point at what changed and what was carried over.',
-    ids: ['diff', 'evidence', 'regions', 'two', 'probe', 'cover'],
+    ids: ['diff', 'evidence', 'regions', 'two', 'pose', 'probe', 'cover'],
   },
   {
     title: 'Same content?',
@@ -1056,6 +1057,13 @@ const VIEWS = {
     what: 'Two models look at every region. The copy detector (SSCD) says where its evidence for “B is a copy of A” comes from; the look-alike model (DINOv2) says whether the region has a close counterpart in the other image. Red marks regions where both agree; amber marks regions that look alike but carry no copy evidence.',
     means: 'This is the idea/expression line in pictures. Amber regions share a subject, pose or composition — the kind of similarity two independent photographers can produce, and which copyright usually leaves free. Red regions are where the copy detector sees reproduced expression. The thresholds are heuristic: treat the map as a prompt for the filtration step, not as its answer.',
     ref: { label: 'Somepalli et al., Diffusion Art or Digital Forgery? (CVPR 2023)', url: 'https://arxiv.org/abs/2212.03860' },
+  },
+  pose: {
+    label: 'Pose',
+    need: (v) => v.pose,
+    what: 'ViTPose finds 17 body joints for each person the object detector found. The best-matching pair of people is drawn in blue, with B’s pose laid over A’s (dashed orange) after removing differences in position, size, rotation and — if it fits better — mirroring. Joint dots show how closely each joint agrees.',
+    means: 'Courts treat a pose on its own as an idea: in Rentmeester v. Nike, Jordan’s grand-jeté pose was free for Nike to use, and the comparison turned on how the photographs selected and arranged everything else. A high pose score therefore says the same idea was used, not that expression was copied.',
+    ref: { label: 'Xu et al., ViTPose (NeurIPS 2022)', url: 'https://arxiv.org/abs/2204.12484' },
   },
   cover: {
     label: 'Cover-up test',
@@ -1249,7 +1257,7 @@ function defaultLens(v, available) {
   return prefer.find((id) => available.includes(id));
 }
 
-const ANN_LENSES = new Set(['diff', 'regions', 'evidence', 'probe', 'two', 'cover']);
+const ANN_LENSES = new Set(['diff', 'regions', 'evidence', 'probe', 'two', 'cover', 'pose']);
 
 function evidenceUnderlay(p) {
   const e = state.visuals.sscd;
@@ -1280,6 +1288,10 @@ function annotationNote(id) {
   }
   if (id === 'probe') return 'Point at any part of either image (or tap it). The other image lights up wherever something resembles that spot, and the arrow lands on the closest match. Click to pin a point.';
   if (id === 'cover') return 'Filtration by hand: paint over what you think is unprotectable (a pose, a background, a stock element) in either image and see how much copy evidence is left.';
+  if (id === 'pose') {
+    const b = v.pose.best;
+    return `Best-matching people: pose similarity ${b.similarity.toFixed(2)}${b.mirrored ? ' (as a mirror image)' : ''} — ${b.similarity >= 0.8 ? 'the same pose' : b.similarity >= 0.55 ? 'a similar pose' : 'different poses'}. A pose alone is an idea, not protected expression (Rentmeester v. Nike).`;
+  }
   if (id === 'two') return `Copy detector score ${v.sscd.score.toFixed(2)}${v.sscd.score < 0.4 ? ' — too low for any region to count as copied, so every match shows as “looks alike only”' : ''}. Red: copied; amber: looks alike only; clear: no counterpart.`;
   const e = v.sscd;
   const n = e.links?.links.length || 0;
@@ -1694,6 +1706,17 @@ function coverView(cssWidth) {
 /** A marked-up view: annotated canvas plus a numbered list of close-ups. */
 function annotatedView(id, cssWidth) {
   if (id === 'probe') return probeView(cssWidth);
+  if (id === 'pose') {
+    const st = AV.drawPose(state.slots.a.bitmap, state.slots.b.bitmap, state.visuals.pose, { cssWidth });
+    const legend = el(
+      'div',
+      { class: 'two-legend' },
+      el('span', {}, el('i', { style: 'background:#2563eb' }), el('b', {}, 'Blue'), ' — each image’s own pose (the best-matching people; others in grey).'),
+      el('span', {}, el('i', { style: 'background:#f59e0b' }), el('b', {}, 'Dashed orange on A'), ' — B’s pose laid over A’s after matching size, position and rotation.'),
+      el('span', {}, el('i', { style: 'background:#16a34a' }), el('b', {}, 'Joint dots on A'), ' — green where B’s joint lands close, amber further, red far.'),
+    );
+    return el('div', { class: 'ann-view ann-pose' }, el('div', { class: 'ann-stage' }, st.canvas), legend);
+  }
   if (id === 'cover') return coverView(cssWidth);
   if (id === 'two') return twoLensView(cssWidth);
   const v = state.visuals;
@@ -1853,6 +1876,7 @@ const WHERE_LENSES = [
   { id: 'regions', label: 'Matching regions', need: (v) => v.annotations?.regions?.length },
   { id: 'two', label: 'Copied or similar?', need: (v) => v.dino && v.sscd },
   { id: 'probe', label: 'Point and compare', need: (v) => v.dino?.featsA || v.sscd?.pairs },
+  { id: 'pose', label: 'Pose', need: (v) => v.pose },
   { id: 'cover', label: 'Cover-up test', need: (v) => v.sscd?.pairs },
 ];
 

@@ -46,6 +46,13 @@ export const MODELS = {
     input: 'pixel_values',
     output: 'embedding',
   },
+  pose: {
+    label: 'ViTPose-B body pose (NeurIPS 2022)',
+    files: ['models/vitpose_b_int8.onnx.part1', 'models/vitpose_b_int8.onnx.part2'],
+    bytes: 89085574,
+    input: 'pixel_values',
+    output: 'heatmaps',
+  },
   xfeat: {
     label: 'XFeat keypoints (CVPR 2024)',
     files: ['models/xfeat.onnx'],

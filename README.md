@@ -18,7 +18,7 @@ requests welcome.
 | Group | Tests |
 | --- | --- |
 | **Neural copy detection** | SSCD ResNet-50 (`sscd_disc_mixup`, official preprocessing) · SSCD after alignment (crop, rotation, perspective or mirroring undone with the keypoint transform, then SSCD on the shared region) · SSCD ResNeXt-101 in the Somepalli et al. replication setting (`sscd_disc_large`, resize 256 / centre-crop 224) · DINOv2 ViT-S/14 · CLIP ViT-B/32 · DreamSim (OpenCLIP ViT-B/32 tuned on human similarity judgments) · LPIPS (AlexNet) |
-| **Objects** | D-FINE object detector (365 Objects365 categories): objects are found in both images, paired up and compared one by one, with marked-up images in the Objects tab |
+| **Objects** | D-FINE object detector (365 Objects365 categories): objects are found in both images, paired up and compared one by one, with marked-up images in the Objects tab · body pose similarity (ViTPose-B, 17 joints per person, Procrustes + OKS, mirror-aware) |
 | **Exact & verbatim** | SHA-256 · SHA-1 · MD5 · same image data with metadata set aside (hash of the JPEG scans / PNG image chunks / WebP bitstream) · pixel-exact match of decoded pixels · verbatim crop search (template matching, verified pixel-for-pixel) |
 | **Perceptual hashes** | PDQ (Meta) · PDQ over all 8 rotations/mirrors · pHash · dHash · aHash · wHash · Blockhash |
 | **Keypoints & geometry** | ORB, AKAZE and BRISK keypoints with RANSAC homography · XFeat learned keypoints (CVPR 2024) with mutual-nearest-neighbour matching · retry against a mirrored B · SSIM after aligning B onto A |
@@ -57,6 +57,12 @@ grouped by the question each view answers:
     strongest pairing lands on the true corresponding location for nearly every high-evidence cell (JPEG,
     caption, mirror, rotation) and most cells of a crop. The export that adds the per-location terms is
     `tools/export_sscd.py --explain`.
+  - *Copied or similar?* — red where the copy detector’s evidence and the look-alike model agree, amber where
+    the look-alike model finds a counterpart the copy detector does not count (shared subject, pose or idea).
+  - *Pose* — ViTPose skeletons for the people in both images, with B’s pose laid over A’s after removing
+    position, size, rotation and (if it fits better) mirroring; joints coloured by agreement.
+  - *Cover-up test* — paint over parts of either image and SSCD re-scores the covered pair, next to the
+    first-order prediction from the pairwise split (filtration by hand; cf. the deletion test of RISE).
   - *Point and compare* — hover over (or tap) any spot in either image: the other image lights up wherever
     something resembles it and an arrow lands on the closest match, using DINOv2 patch features or SSCD’s
     pairwise evidence.
@@ -208,6 +214,8 @@ carried SSCD’s evidence did not help.
 - SSCD: Pizzi et al., *A Self-Supervised Descriptor for Image Copy Detection*, CVPR 2022 — MIT.
 - D-FINE: Peng et al., ICLR 2025 — Apache-2.0; trained on Objects365 (Shao et al., ICCV 2019).
 - XFeat: Potje et al., *XFeat: Accelerated Features for Lightweight Image Matching*, CVPR 2024 — Apache-2.0.
+- ViTPose: Xu et al., *ViTPose: Simple Vision Transformer Baselines for Human Pose Estimation*, NeurIPS 2022 —
+  Apache-2.0 (ONNX export by onnx-community, compressed with `tools/quantize_weights.py`).
 - DreamSim: Fu et al., *DreamSim: Learning New Dimensions of Human Visual Similarity using Synthetic Data*,
   NeurIPS 2023 — MIT (OpenCLIP backbone, MIT).
 - DINOv2: Oquab et al., 2023 — Apache-2.0. CLIP: Radford et al., 2021 — MIT. LPIPS: Zhang et al., CVPR 2018 —
