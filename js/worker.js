@@ -1293,6 +1293,8 @@ async function scan({ scanId, a, b, disabled }) {
       megapixels: ((img.w * img.h) / 1e6).toFixed(2),
       transparency: img.hasAlpha ? 'yes (composited on white)' : 'no',
       exif: summarizeExif(img.exif),
+      // Content Credentials are read on the page, with the C2PA SDK, only when present
+      c2pa: !!img.prov?.info?.c2pa,
     });
   }
   post({ type: 'info', scanId, info: c.info });

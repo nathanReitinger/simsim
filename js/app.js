@@ -5,6 +5,7 @@ import { applyTransform, DEFAULTS, PRESETS, describe } from './transform.js';
 import { CASES, CASE_GROUPS } from './cases.js';
 import { lutColor } from './lib/colormap.js';
 import * as AV from './annotate-view.js';
+import * as C2PA from './c2pa.js';
 
 const ROOT = new URL('../', import.meta.url);
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -181,6 +182,7 @@ function onWorkerMessage(e) {
     case 'info':
       state.info = m.info;
       renderDetails();
+      checkCredentials(m.scanId, m.info);
       break;
     case 'running':
       state.results[m.id] = { verdict: 'running' };
@@ -210,6 +212,42 @@ function onWorkerMessage(e) {
       fail(m.message);
       break;
     default:
+  }
+}
+
+/** Content Credentials, read on the page with the C2PA SDK when either file carries them. */
+async function checkCredentials(scanId, info) {
+  const show = (r) => {
+    if (scanId !== state.scanId) return;
+    state.results.c2pa = r;
+    renderEngine('c2pa');
+    updateSummary();
+  };
+  if (!info?.a?.c2pa && !info?.b?.c2pa) {
+    show({ verdict: 'na', display: 'none in either file', note: 'Neither file carries Content Credentials. Most images do not, and screenshots and most website uploads remove them.' });
+    return;
+  }
+  show({ verdict: 'running' });
+  try {
+    const read = async (side) => (info[side]?.c2pa ? C2PA.summarize(await C2PA.readCredentials(state.slots[side].file)) : null);
+    const [sa, sb] = await Promise.all([read('a'), read('b')]);
+    const detail = { A: C2PA.describe(sa), B: C2PA.describe(sb) };
+    if (C2PA.linked(sb, sa)) {
+      show({ verdict: 'match', display: 'B lists A as an ingredient', detail, note: 'B’s signed Content Credentials record A among the files it was made from — its own account of being derived from A.' });
+    } else if (C2PA.linked(sa, sb)) {
+      show({ verdict: 'match', display: 'A lists B as an ingredient', detail, note: 'A’s signed Content Credentials record B among the files it was made from.' });
+    } else {
+      const ai = [sa?.ai && 'A', sb?.ai && 'B'].filter(Boolean);
+      const has = [sa && 'A', sb && 'B'].filter(Boolean);
+      show({
+        verdict: 'info',
+        display: ai.length ? `${ai.join(' and ')}: generative AI declared` : `credentials in ${has.join(' and ')}`,
+        detail,
+        note: `${has.join(' and ')} ${has.length === 2 ? 'carry' : 'carries'} signed Content Credentials, but neither lists the other as an ingredient.${ai.length ? ` ${ai.join(' and ')} ${ai.length === 2 ? 'declare' : 'declares'} that generative AI produced ${ai.length === 2 ? 'them' : 'it'}.` : ''}`,
+      });
+    }
+  } catch (err) {
+    show({ verdict: 'error', display: 'could not read', note: `The C2PA reader failed: ${err.message || err}` });
   }
 }
 
@@ -733,7 +771,12 @@ function headline(results) {
     return { tone: 'identical', title: 'Verbatim crop', sub: `One image is an unaltered cut-out of the other (${results.crop.detail?.['best placement'] || ''}).` };
   }
   const credits = stripped ? ' B also drops A’s creator and copyright fields.' : '';
-  const derived = verdict('lineage') === 'match' ? ` Its edit history agrees: ${results.lineage.display}.` : '';
+  const derived =
+    verdict('c2pa') === 'match'
+      ? ` Its signed Content Credentials agree: ${results.c2pa.display}.`
+      : verdict('lineage') === 'match'
+        ? ` Its edit history agrees: ${results.lineage.display}.`
+        : '';
   if (sscd !== null && sscd >= 0.75) {
     return { tone: 'match', title: 'Copy detected', sub: `SSCD scores ${sscd.toFixed(3)}${how}, above the 0.75 copy threshold: B looks like an edited copy of A.${derived}${credits}` };
   }

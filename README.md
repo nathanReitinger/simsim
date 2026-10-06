@@ -24,7 +24,7 @@ requests welcome.
 | **Keypoints & geometry** | ORB, AKAZE and BRISK keypoints with RANSAC homography · XFeat learned keypoints (CVPR 2024) with mutual-nearest-neighbour matching · retry against a mirrored B · SSIM after aligning B onto A |
 | **Pixel & structural** | SSIM · MS-SSIM · PSNR · normalised cross-correlation · UQI · GMSD · CIEDE2000 ΔE · changed-pixel ratio · Carlini et al.’s tiled ℓ2 extraction test (512², worst of 16 tiles, ≤ 0.15) |
 | **Colour & histograms** | Hue–saturation correlation · χ² · RGB histogram intersection · Bhattacharyya · brightness EMD |
-| **Metadata & provenance** | EXIF capture fields (camera, timestamp, unique IDs) · copyright management information (XMP/IPTC/EXIF creator, rights, credit, licence — flagged when B drops A’s) · XMP edit history (DocumentID, DerivedFrom, DocumentAncestors; AI-generator settings in PNG text) · JPEG encoder fingerprint (quantization tables, estimated quality, subsampling) · embedded EXIF preview vs both images · Stable Diffusion’s invisible watermark (the invisible-watermark “dwtDct” mark written by the SD 1.x/2.x reference scripts and the SDXL pipeline; decoder verified bit-for-bit against the reference library) |
+| **Metadata & provenance** | Content Credentials (C2PA: signer, tool, actions, generative-AI declarations, and whether B lists A as an ingredient — read with the official C2PA SDK, loaded only when a file carries a manifest) · EXIF capture fields (camera, timestamp, unique IDs) · copyright management information (XMP/IPTC/EXIF creator, rights, credit, licence — flagged when B drops A’s) · XMP edit history (DocumentID, DerivedFrom, DocumentAncestors; AI-generator settings in PNG text) · JPEG encoder fingerprint (quantization tables, estimated quality, subsampling) · embedded EXIF preview vs both images · Stable Diffusion’s invisible watermark (the invisible-watermark “dwtDct” mark written by the SD 1.x/2.x reference scripts and the SDXL pipeline; decoder verified bit-for-bit against the reference library) |
 
 Each test has a verdict (*Identical*, *Match*, *Partial*, *No match*, *N/A*). Thresholds come from the source
 papers where they exist — SSCD ≥ 0.75 (90% precision on DISC2021, per the SSCD authors), SSCD > 0.5 for
@@ -184,6 +184,11 @@ contrast, a combined crop+mirror+recolour+caption edit, and a collage that paste
 | CLIP | 0.983 | 83.7% | |
 | pHash | 0.827 | 52.6% | |
 
+ICDiff’s PDF-Embedding (Wang et al., NeurIPS 2024), which predicts a 0–5 “replication level” for diffusion
+outputs and correlates with human labels on its own D-Rep data far better than SSCD, was also tested and not
+shipped: outside that distribution its six level scores are nearly tied, so it rated near-identical images as
+level 2 and placed 14% of unrelated pairs at level 2 or above.
+
 Two other partial-copy strategies were tried and not shipped: the maximum over 18 crops of each image found every
 collage but cost 36 extra network runs per pair and raised the false-alarm level; re-scoring the region that
 carried SSCD’s evidence did not help.
@@ -208,6 +213,8 @@ carried SSCD’s evidence did not help.
 - DINOv2: Oquab et al., 2023 — Apache-2.0. CLIP: Radford et al., 2021 — MIT. LPIPS: Zhang et al., CVPR 2018 —
   BSD-2-Clause (AlexNet weights from torchvision, BSD-3-Clause).
   Licence texts are in [`models/licenses/`](models/licenses).
+- [C2PA web SDK](https://github.com/contentauth/c2pa-js) 0.15.3 (MIT; bundled with `highgain`, ISC) — in
+  `vendor/c2pa/`. C2PA test images for development came from the C2PA public test files (CC BY-SA 4.0).
 - [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) 1.30 (MIT),
   [OpenCV.js](https://github.com/TechStark/opencv-js) 4.12 (Apache-2.0),
   [exifr](https://github.com/MikeKovarik/exifr) 7.1 (MIT) — in `vendor/` with their licences.

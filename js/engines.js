@@ -777,6 +777,23 @@ export const ENGINES = [
     ],
   },
   {
+    id: 'c2pa',
+    group: 'meta',
+    name: 'Content Credentials (C2PA)',
+    by: 'signed provenance manifests · official C2PA SDK',
+    metric: 'what each file’s signed history says',
+    better: 'equal',
+    about:
+      'C2PA “Content Credentials” are cryptographically signed records attached to a file: which tool made or edited it, what was done, whether generative AI was involved, and which earlier files (“ingredients”) went into it. Adobe, OpenAI, Google, Microsoft and several camera makers write them. This test reads each file’s credentials with the official C2PA SDK and checks whether B lists A as an ingredient.',
+    thresholds: 'B lists A as an ingredient (or A lists B): match. Credentials present but unrelated: shown for information. No credentials in either file: not applicable — most images have none, and removing them is easy.',
+    robust: ['edits in tools that support C2PA'],
+    weak: ['stripped by most websites and by screenshots', 'only as trustworthy as the signer'],
+    refs: [
+      { label: 'C2PA specification', url: 'https://c2pa.org/specifications/' },
+      { label: 'Content Authenticity Initiative', url: 'https://contentauthenticity.org/' },
+    ],
+  },
+  {
     id: 'cmi',
     group: 'meta',
     name: 'Copyright notices (CMI)',
