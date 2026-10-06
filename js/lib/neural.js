@@ -135,6 +135,31 @@ export function sscdEvidence(self, eOther) {
 }
 
 /**
+ * Exact pairwise split of the SSCD cosine score: R[l * nB + m] is the part
+ * of cos(e_A, e_B) contributed by location l of A paired with location m of
+ * B (the bias terms, a few thousandths, are left out).
+ */
+export function sscdPairs(A, B) {
+  const nA = A.fh * A.fw;
+  const nB = B.fh * B.fw;
+  const dims = A.e.length;
+  const R = new Float32Array(nA * nB);
+  const k = 1 / (A.znorm * B.znorm);
+  // contrib is laid out [dims][locations]
+  for (let o = 0; o < dims; o++) {
+    const ra = o * nA;
+    const rb = o * nB;
+    for (let l = 0; l < nA; l++) {
+      const v = A.contrib[ra + l] * k;
+      if (!v) continue;
+      const row = l * nB;
+      for (let m = 0; m < nB; m++) R[row + m] += v * B.contrib[rb + m];
+    }
+  }
+  return R;
+}
+
+/**
  * Dense DINOv2 patch features for the whole (uncropped) image, resized so
  * both sides are multiples of the 14-pixel patch size. Returns L2-normalised
  * 384-d features on a gw × gh grid.

@@ -592,6 +592,165 @@ export function objectRegions(mutual, ga, gb, detsA, detsB, A, B, { minSim = 0.5
   }));
 }
 
+/** Split grid cells into k spatial clusters (weighted k-means, deterministic start). */
+function kmeansCells(cells, g, weights, k) {
+  const pts = cells.map((i) => [(i % g.gw) + 0.5, Math.floor(i / g.gw) + 0.5, Math.max(1e-6, weights[i])]);
+  // farthest-point initialisation from the heaviest cell
+  const centres = [pts.reduce((b, p) => (p[2] > b[2] ? p : b), pts[0]).slice(0, 2)];
+  while (centres.length < k) {
+    let far = null;
+    let farD = -1;
+    for (const p of pts) {
+      const d = Math.min(...centres.map((c) => (p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2));
+      if (d > farD) {
+        farD = d;
+        far = p;
+      }
+    }
+    centres.push(far.slice(0, 2));
+  }
+  let assign = new Array(pts.length).fill(0);
+  for (let it = 0; it < 12; it++) {
+    assign = pts.map((p) => {
+      let best = 0;
+      let bd = Infinity;
+      centres.forEach((c, j) => {
+        const d = (p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2;
+        if (d < bd) {
+          bd = d;
+          best = j;
+        }
+      });
+      return best;
+    });
+    centres.forEach((c, j) => {
+      let sx = 0;
+      let sy = 0;
+      let sw = 0;
+      pts.forEach((p, i) => {
+        if (assign[i] !== j) return;
+        sx += p[0] * p[2];
+        sy += p[1] * p[2];
+        sw += p[2];
+      });
+      if (sw) {
+        c[0] = sx / sw;
+        c[1] = sy / sw;
+      }
+    });
+  }
+  const out = centres.map(() => []);
+  cells.forEach((c, i) => out[assign[i]].push(c));
+  return out.filter((o) => o.length);
+}
+
+/**
+ * SSCD's copy score, split by which part of A matched which part of B.
+ *
+ * The descriptor of each image is a sum of per-location terms (GeM pooling
+ * written as a sum, pushed through the final linear layer), so the cosine
+ * score is exactly a double sum over pairs of locations, R[l][m] (BiLRP-style
+ * second-order explanation). Each cell l of A keeps its exact share of the
+ * score, evA[l] = sum over B, and points at the cell of B it pairs with most
+ * strongly. Neighbouring cells that point at neighbouring cells form one
+ * link, so the links (plus what is left over) add up to the score.
+ */
+export function copyLinks(R, evA, ga, gb, score, { max = 8 } = {}) {
+  const nA = ga.gw * ga.gh;
+  const nB = gb.gw * gb.gh;
+  const target = new Int32Array(nA);
+  for (let l = 0; l < nA; l++) {
+    let best = -Infinity;
+    for (let m = 0; m < nB; m++) {
+      const v = R[l * nB + m];
+      if (v > best) {
+        best = v;
+        target[l] = m;
+      }
+    }
+  }
+  const cell = (i, g) => [i % g.gw, Math.floor(i / g.gw)];
+  const pos = [];
+  for (let l = 0; l < nA; l++) if (evA[l] > 0) pos.push(l);
+  const parent = new Map(pos.map((l) => [l, l]));
+  const find = (l) => {
+    while (parent.get(l) !== l) {
+      parent.set(l, parent.get(parent.get(l)));
+      l = parent.get(l);
+    }
+    return l;
+  };
+  for (let i = 0; i < pos.length; i++) {
+    const [ax, ay] = cell(pos[i], ga);
+    const [bx, by] = cell(target[pos[i]], gb);
+    for (let j = i + 1; j < pos.length; j++) {
+      const [cx, cy] = cell(pos[j], ga);
+      if (Math.max(Math.abs(ax - cx), Math.abs(ay - cy)) > 1) continue;
+      const [dx, dy] = cell(target[pos[j]], gb);
+      if (Math.max(Math.abs(bx - dx), Math.abs(by - dy)) > 2) continue;
+      parent.set(find(pos[i]), find(pos[j]));
+    }
+  }
+  const groups = new Map();
+  for (const l of pos) {
+    const r = find(l);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(l);
+  }
+  let positive = 0;
+  let negative = 0;
+  for (let l = 0; l < nA; l++) {
+    if (evA[l] > 0) positive += evA[l];
+    else negative += evA[l];
+  }
+  const centroid = (cells, g, w) => {
+    let sx = 0;
+    let sy = 0;
+    let sw = 0;
+    cells.forEach((i, k) => {
+      const [x, y] = cell(i, g);
+      const wt = Math.max(1e-9, w ? w[k] : 1);
+      sx += (x + 0.5) * wt;
+      sy += (y + 0.5) * wt;
+      sw += wt;
+    });
+    return [sx / sw / g.gw, sy / sw / g.gh];
+  };
+  const box = (cells, g) => {
+    const xs = cells.map((i) => i % g.gw);
+    const ys = cells.map((i) => Math.floor(i / g.gw));
+    return [Math.min(...xs) / g.gw, Math.min(...ys) / g.gh, (Math.max(...xs) + 1) / g.gw, (Math.max(...ys) + 1) / g.gh];
+  };
+  // A large coherent group (a near copy) is split into a few parts, so the
+  // arrows show how content moved: parallel for a copy, crossing for a
+  // mirror image, fanning out for a crop.
+  const parts = [];
+  for (const cells of groups.values()) {
+    const k = cells.length >= 16 ? Math.min(5, Math.max(2, Math.round(cells.length / 14))) : 1;
+    if (k === 1) parts.push(cells);
+    else parts.push(...kmeansCells(cells, ga, evA, k));
+  }
+  const all = parts
+    .map((cells) => {
+      const weights = cells.map((l) => evA[l]);
+      const b = [...new Set(cells.map((l) => target[l]))];
+      return {
+        a: cells,
+        b,
+        weight: weights.reduce((t, v) => t + v, 0),
+        ca: centroid(cells, ga, weights),
+        cb: centroid(cells.map((l) => target[l]), gb, weights),
+        boxA: box(cells, ga),
+        boxB: box(b, gb),
+      };
+    })
+    .sort((p, q) => q.weight - p.weight);
+  const floor = Math.max(0.02, 0.04 * Math.max(0, score));
+  const links = score < 0.1 ? [] : all.filter((g) => g.weight >= floor).slice(0, max);
+  const shown = links.reduce((t, g) => t + g.weight, 0);
+  return { links, rest: positive - shown, negative, positive, score, target: Array.from(target) };
+}
+
 /** Local maxima of an evidence map (cells as fractions of the image). */
 export function evidencePeaks(map, { max = 3, rel = 0.45 } = {}) {
   const { gw, gh, values } = map;

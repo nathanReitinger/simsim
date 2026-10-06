@@ -682,10 +682,16 @@ const RUN = {
     const A = await N.sscdWithContrib(ort, s, c.a.work);
     const B = await N.sscdWithContrib(ort, s, c.b.work);
     const value = N.cosine(A.e, B.e);
+    const ga = { gw: A.fw, gh: A.fh };
+    const gb = { gw: B.fw, gh: B.fh };
+    const evA = N.sscdEvidence(A, B.e);
+    const pairs = N.sscdPairs(A, B);
     c.visuals.sscd = {
       score: value,
-      a: { gw: A.fw, gh: A.fh, values: N.sscdEvidence(A, B.e) },
-      b: { gw: B.fw, gh: B.fh, values: N.sscdEvidence(B, A.e) },
+      a: { ...ga, values: evA },
+      b: { ...gb, values: N.sscdEvidence(B, A.e) },
+      pairs,
+      links: Ann.copyLinks(pairs, evA, ga, gb, value),
     };
     return { value };
   },
@@ -704,6 +710,10 @@ const RUN = {
       b: { gw: pb.gw, gh: pb.gh, values: corr.bestB },
       lines: spreadLines(corr.mutual, pa.gw),
       mutualShare: share,
+      // unit-length patch features, for pointing at a spot and finding its match
+      featsA: pa.feats,
+      featsB: pb.feats,
+      dims: pa.d,
     };
     r.detail = { 'patches of A with a mutual match in B (cos ≥ 0.5)': `${Math.round(share * 100)}%` };
     return r;
@@ -773,6 +783,54 @@ async function buildAnnotations(c) {
   const sameShape = Math.abs(Math.log(A.w / A.h / (B.w / B.h))) < 0.03;
   const pixelClose = (R.ssim?.value ?? 0) >= 0.5 || (R.pdq?.value ?? 256) <= 63;
   if (!Hw && sameShape && pixelClose) Hw = [A.w / B.w, 0, 0, 0, A.h / B.h, 0, 0, 0, 1];
+  const keypointH = workHomography(c);
+  if (keypointH) {
+    // which part of each image the other one shows (B's frame drawn on A, and A's on B)
+    const apply = (M, x, y) => {
+      const z = M[6] * x + M[7] * y + M[8];
+      return [(M[0] * x + M[1] * y + M[2]) / z, (M[3] * x + M[4] * y + M[5]) / z];
+    };
+    const corners = (w, h) => [
+      [0, 0],
+      [w, 0],
+      [w, h],
+      [0, h],
+    ];
+    const inv = Ann.invert3(keypointH);
+    const quadArea = (q) => Math.abs(q.reduce((t, [x, y], i) => t + x * q[(i + 1) % 4][1] - q[(i + 1) % 4][0] * y, 0)) / 2;
+    const clipShare = (q, w, h) => {
+      // share of a w×h image covered by quad q, estimated on a 40×40 grid
+      let inside = 0;
+      for (let i = 0; i < 40; i++) {
+        for (let j = 0; j < 40; j++) {
+          const x = ((j + 0.5) / 40) * w;
+          const y = ((i + 0.5) / 40) * h;
+          let sign = 0;
+          let ok = true;
+          for (let k = 0; k < 4 && ok; k++) {
+            const [x1, y1] = q[k];
+            const [x2, y2] = q[(k + 1) % 4];
+            const cr = Math.sign((x2 - x1) * (y - y1) - (y2 - y1) * (x - x1));
+            if (cr && sign && cr !== sign) ok = false;
+            if (cr) sign = cr;
+          }
+          if (ok) inside++;
+        }
+      }
+      return inside / 1600;
+    };
+    const qA = corners(B.w, B.h).map(([x, y]) => apply(keypointH, x, y));
+    const qB = inv ? corners(A.w, A.h).map(([x, y]) => apply(inv, x, y)) : null;
+    out.overlap = {
+      inA: qA.map(([x, y]) => [x * kA, y * kA]),
+      inB: qB ? qB.map(([x, y]) => [x * kB, y * kB]) : null,
+      coverA: clipShare(qA, A.w, A.h),
+      coverB: qB ? clipShare(qB, B.w, B.h) : 1,
+      // B's pixels per pixel of A, in the original files
+      zoom: 1 / ((Math.sqrt(quadArea(qA) / (B.w * B.h)) * kA) / kB),
+      rotation: (Math.atan2(qA[1][1] - qA[0][1], qA[1][0] - qA[0][0]) * 180) / Math.PI,
+    };
+  }
   if (Hw) {
     const cv = await loadOpenCV();
     const [dw, dh] = fitWithin(A.w, A.h, 900);
@@ -814,7 +872,21 @@ async function buildAnnotations(c) {
     });
   }
 
-  // 3. Where SSCD's copy evidence peaks.
+  // 3. Which part of A pairs with which part of B in SSCD's copy score.
+  if (c.visuals.sscd?.links) {
+    out.copyLinks = c.visuals.sscd.links.links.map((k) => {
+      const boxAw = fracBox(k.boxA, A);
+      const boxBw = fracBox(k.boxB, B);
+      return {
+        weight: k.weight,
+        labelA: Ann.labelFor(boxAw, dets.a, A.w * A.h),
+        labelB: Ann.labelFor(boxBw, dets.b, B.w * B.h),
+        thumbs: { a: thumbOf(A, boxAw), b: thumbOf(B, boxBw) },
+      };
+    });
+  }
+
+  // 4. Where SSCD's copy evidence peaks.
   if (c.visuals.sscd) {
     const peaks = (map, img, k, ds) =>
       Ann.evidencePeaks(map).map((p) => {
@@ -906,11 +978,20 @@ async function scan({ scanId, a, b, disabled }) {
       sane: r.sane,
     };
   }
+  // hand typed arrays over without copying (each buffer once; views into a
+  // larger buffer are copied)
   const transfer = [];
+  const seen = new Set();
   const collect = (o) => {
     if (!o || typeof o !== 'object') return;
-    if (o.data instanceof Uint8ClampedArray) transfer.push(o.data.buffer);
-    else for (const x of Object.values(o)) collect(x);
+    if (ArrayBuffer.isView(o)) {
+      if (o.byteOffset === 0 && o.byteLength === o.buffer.byteLength && !seen.has(o.buffer)) {
+        seen.add(o.buffer);
+        transfer.push(o.buffer);
+      }
+      return;
+    }
+    for (const x of Object.values(o)) collect(x);
   };
   collect(v);
   post({ type: 'info', scanId, info: c.info });

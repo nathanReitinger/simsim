@@ -3,7 +3,9 @@
 // short labels, with everything that is not annotated dimmed a little.
 // Sizes are given in CSS pixels and scaled by `u` (canvas pixels per CSS px).
 
-export const PALETTE = ['#16a34a', '#2563eb', '#c026d3', '#0891b2', '#ea580c', '#4f46e5'];
+import { lutColor } from './lib/colormap.js';
+
+export const PALETTE = ['#16a34a', '#2563eb', '#c026d3', '#0891b2', '#ea580c', '#4f46e5', '#ca8a04', '#db2777'];
 export const RED = '#ef233c';
 export const AMBER = '#f59e0b';
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -378,6 +380,76 @@ export function banner(p, rect, text, color) {
   drawPill(p, x, y, text, color, size, { solid: true });
 }
 
+/**
+ * When one image shows only part of the other (a crop, or a copy placed on a
+ * larger canvas), outline that part and draw arrows from its corners to the
+ * corners of the other image, like a zoom callout.
+ */
+function drawOverlap(p, ann) {
+  const o = ann.overlap;
+  if (!o) return null;
+  const showA = o.coverA < 0.92;
+  const showB = !showA && o.inB && o.coverB < 0.92;
+  if (!showA && !showB) return null;
+  const { g, u } = p;
+  const host = showA ? p.a : p.b;
+  const quad = (showA ? o.inA : o.inB).map(([x, y]) => [host.x + x * host.s, host.y + y * host.s]);
+  const other = showA ? p.b : p.a;
+  const corners = [
+    [other.x, other.y],
+    [other.x + other.w, other.y],
+    [other.x + other.w, other.y + other.h],
+    [other.x, other.y + other.h],
+  ];
+  // dim the part of the host image that the other image does not show
+  g.save();
+  g.beginPath();
+  g.rect(host.x, host.y, host.w, host.h);
+  g.moveTo(...quad[0]);
+  for (let k = 1; k < 4; k++) g.lineTo(...quad[k]);
+  g.closePath();
+  g.clip('evenodd');
+  g.fillStyle = 'rgba(8, 12, 22, 0.5)';
+  g.fillRect(host.x, host.y, host.w, host.h);
+  g.restore();
+  // the outline, clipped to the host image
+  g.save();
+  g.beginPath();
+  g.rect(host.x - 2 * u, host.y - 2 * u, host.w + 4 * u, host.h + 4 * u);
+  g.clip();
+  for (const [stroke, w, dash] of [
+    ['rgba(255,255,255,0.95)', 6, []],
+    ['#2563eb', 3, [9 * u, 6 * u]],
+  ]) {
+    g.beginPath();
+    g.moveTo(...quad[0]);
+    for (let k = 1; k < 4; k++) g.lineTo(...quad[k]);
+    g.closePath();
+    g.setLineDash(dash);
+    g.strokeStyle = stroke;
+    g.lineWidth = w * u;
+    g.stroke();
+  }
+  g.restore();
+  // corner arrows: this part of A -> all of B (or all of A -> this part of B)
+  for (let k = 0; k < 4; k++) {
+    const inside = (pt) => pt[0] >= host.x - 1 && pt[0] <= host.x + host.w + 1 && pt[1] >= host.y - 1 && pt[1] <= host.y + host.h + 1;
+    if (!inside(quad[k])) continue;
+    const [from, to] = showA ? [quad[k], corners[k]] : [corners[k], quad[k]];
+    curvedArrow(p, from, to, '#2563eb', { bend: k < 2 ? -0.06 : 0.06, width: 1.8, alpha: 0.85, dashed: true });
+  }
+  const cx = quad.reduce((t, q) => t + q[0], 0) / 4;
+  const top = Math.min(...quad.map((q) => q[1]));
+  const zoom = showA ? o.zoom : 1 / o.zoom;
+  const pct = Math.round((showA ? o.coverA : o.coverB) * 100);
+  const text = showA ? `B shows this ${pct}% of A${zoom > 1.15 ? `, enlarged ${zoom.toFixed(1)}×` : ''}` : `A fills this ${pct}% of B`;
+  const { w, h } = pillSize(p, text, 11.5);
+  const x = Math.max(host.x + 2 * u, Math.min(host.x + host.w - w - 2 * u, cx - w / 2));
+  const y = Math.max(host.y + 4 * u, Math.min(host.y + host.h - h - 4 * u, top - h - 6 * u >= host.y ? top - h - 6 * u : top + 6 * u));
+  p.placed.push(drawPill(p, x, y, text, '#2563eb', 11.5, { solid: true }));
+  return { showA, showB };
+}
+
 const diffText = (d) => (d.label ? `${d.label} · ${KIND_TEXT[d.kind] || 'changed'}` : KIND_TEXT[d.kind] || 'changed');
 
 /**
@@ -388,11 +460,13 @@ export function drawDifferences(bmA, bmB, ann, { cssWidth, focus = null, labels 
   const p = stage(bmA, bmB, { cssWidth, gap: 34 });
   const items = ann.differences.map((d) => ({ d, ea: ellipseFor(d.a, p.a, p.u), eb: ellipseFor(d.b, p.b, p.u) }));
   if (!items.length) {
+    drawOverlap(p, ann);
     banner(p, p.b, ann.global ? 'B differs almost everywhere' : 'No differences found', ann.global ? RED : '#16a34a');
     return p;
   }
   const lit = focus ? items.filter((i) => i.d.n === focus) : items;
   spotlight(p, lit.flatMap((i) => [i.ea, i.eb]), focus ? 0.5 : 0.24);
+  if (!focus) drawOverlap(p, ann);
   for (const { d, ea, eb } of items) {
     const alpha = focus && d.n !== focus ? 0.35 : 1;
     markerEllipse(p, ea, RED, d.n * 7, { alpha });
@@ -521,6 +595,176 @@ export function drawEvidence(bmA, bmB, ann, { cssWidth, underlay } = {}) {
     });
   }
   return p;
+}
+
+const hexRgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+
+/** Soft-edged blob covering grid cells of an image, in a colour. */
+function blob(p, rect, grid, cells, color, alpha) {
+  const m = document.createElement('canvas');
+  m.width = grid.gw;
+  m.height = grid.gh;
+  const mg = m.getContext('2d');
+  const id = mg.createImageData(grid.gw, grid.gh);
+  const [r, g, b] = hexRgb(color);
+  for (const i of cells) {
+    id.data[i * 4] = r;
+    id.data[i * 4 + 1] = g;
+    id.data[i * 4 + 2] = b;
+    id.data[i * 4 + 3] = 255;
+  }
+  mg.putImageData(id, 0, 0);
+  p.g.save();
+  p.g.globalAlpha = alpha;
+  p.g.imageSmoothingEnabled = true;
+  p.g.imageSmoothingQuality = 'high';
+  p.g.drawImage(m, rect.x, rect.y, rect.w, rect.h);
+  p.g.restore();
+}
+
+/**
+ * Where SSCD's copy score comes from: each link pairs a part of A with the
+ * part of B it supports, drawn as matching colour patches joined by an arrow
+ * whose width is that link's share of the score.
+ */
+export function drawCopyLinks(bmA, bmB, sscd, { cssWidth, focus = null, underlay = null } = {}) {
+  const p = stage(bmA, bmB, { cssWidth, gap: 64 });
+  const L = sscd.links;
+  if (underlay) underlay(p);
+  if (!L || !L.links.length) {
+    banner(p, p.b, sscd.score < 0.1 ? 'No copy evidence' : 'Evidence too spread out to pair', '#64748b');
+    return p;
+  }
+  const strength = Math.max(0.45, Math.min(1, (sscd.score - 0.1) / 0.5));
+  const items = L.links.map((k, i) => ({ k, n: i + 1, color: PALETTE[i % PALETTE.length] }));
+  const toA = ([x, y]) => [p.a.x + x * p.a.w, p.a.y + y * p.a.h];
+  const toB = ([x, y]) => [p.b.x + x * p.b.w, p.b.y + y * p.b.h];
+  // dim everything a little so the coloured parts stand out
+  p.g.save();
+  p.g.fillStyle = 'rgba(8, 12, 22, 0.28)';
+  p.g.fillRect(p.a.x, p.a.y, p.a.w, p.a.h);
+  p.g.fillRect(p.b.x, p.b.y, p.b.w, p.b.h);
+  p.g.restore();
+  for (const { k, n, color } of items) {
+    // a light tint for every link; the one singled out gets a solid patch
+    const a = focus ? (focus === n ? 0.6 : 0) : 0.26;
+    if (!a) continue;
+    blob(p, p.a, sscd.a, k.a, color, a * strength);
+    blob(p, p.b, sscd.b, k.b, color, a * strength);
+  }
+  const maxW = Math.max(...items.map((i) => i.k.weight));
+  const order = focus ? [...items.filter((i) => i.n !== focus), ...items.filter((i) => i.n === focus)] : items;
+  const mids = [];
+  for (const { k, n, color } of order) {
+    const on = !focus || focus === n;
+    const from = toA(k.ca);
+    const to = toB(k.cb);
+    const width = 1.8 + 4.2 * Math.sqrt(Math.max(0, k.weight) / maxW);
+    const bend = (from[1] + to[1]) / 2 < p.a.y + p.a.h / 2 ? -0.12 : 0.12;
+    const mid = curvedArrow(p, from, to, color, { bend, width, alpha: (on ? 1 : 0.25) * strength });
+    mids.push({ k, n, color, mid, on });
+    p.hits.push({ n, e: { cx: from[0], cy: from[1], rx: 22 * p.u, ry: 22 * p.u } }, { n, e: { cx: to[0], cy: to[1], rx: 22 * p.u, ry: 22 * p.u } });
+  }
+  for (const { k, n, color } of items) {
+    const on = !focus || focus === n;
+    const ea = { cx: toA(k.ca)[0], cy: toA(k.ca)[1], rx: 1, ry: 1 };
+    const eb = { cx: toB(k.cb)[0], cy: toB(k.cb)[1], rx: 1, ry: 1 };
+    badge(p, { ...ea, cx: ea.cx + 9 * p.u, cy: ea.cy + 9 * p.u }, p.a, n, color, { alpha: on ? 1 : 0.35, size: 9.5 });
+    badge(p, { ...eb, cx: eb.cx + 9 * p.u, cy: eb.cy + 9 * p.u }, p.b, n, color, { alpha: on ? 1 : 0.35, size: 9.5 });
+  }
+  // label the strongest links (or the one singled out) with their share of the score
+  const labelled = new Set(focus ? [focus] : items.slice(0, 3).map((i) => i.n));
+  {
+    for (const { k, n, color, mid, on } of mids) {
+      if (!on || !labelled.has(n)) continue;
+      const pct = sscd.score > 0.05 ? ` (${Math.round((100 * k.weight) / sscd.score)}%)` : '';
+      const text = focus ? `+${k.weight.toFixed(2)} of ${sscd.score.toFixed(2)}${pct}` : `+${k.weight.toFixed(2)}`;
+      const { w, h } = pillSize(p, text, 11);
+      let best = null;
+      for (const dy of [0, -1, 1, -2, 2]) {
+        const x = Math.max(2, Math.min(p.canvas.width - w - 2, mid[0] - w / 2));
+        const y = Math.max(2, Math.min(p.canvas.height - h - 2, mid[1] - h / 2 + dy * (h + 3 * p.u)));
+        const hit = p.placed.filter((o) => overlaps({ x, y, w, h }, o)).length;
+        if (!best || hit < best.hit) best = { x, y, hit };
+        if (!hit) break;
+      }
+      p.placed.push(drawPill(p, best.x, best.y, text, color, 11, { alpha: strength }));
+      void n;
+    }
+  }
+  return p;
+}
+
+/**
+ * Point-and-compare: hovering over one image lights up everything similar in
+ * the other and draws an arrow to the closest match. `source` gives the
+ * similarity of one cell to every cell of the other image.
+ */
+export function probeStage(bmA, bmB, source, { cssWidth } = {}) {
+  const p = stage(bmA, bmB, { cssWidth, gap: 56 });
+  const heat = (rect, grid, values, lo, hi) => {
+    const c = document.createElement('canvas');
+    c.width = grid.gw;
+    c.height = grid.gh;
+    const g = c.getContext('2d');
+    const id = g.createImageData(grid.gw, grid.gh);
+    for (let i = 0; i < grid.gw * grid.gh; i++) {
+      const v = Math.max(0, Math.min(1, (values[i] - lo) / (hi - lo)));
+      const [r, gg, b] = lutColor(0.25 + 0.75 * v);
+      id.data[i * 4] = r;
+      id.data[i * 4 + 1] = gg;
+      id.data[i * 4 + 2] = b;
+      id.data[i * 4 + 3] = Math.round(225 * v);
+    }
+    g.putImageData(id, 0, 0);
+    p.g.save();
+    p.g.imageSmoothingEnabled = true;
+    p.g.imageSmoothingQuality = 'high';
+    p.g.drawImage(c, rect.x, rect.y, rect.w, rect.h);
+    p.g.restore();
+  };
+  const cellRect = (rect, grid, i) => {
+    const cw = rect.w / grid.gw;
+    const ch = rect.h / grid.gh;
+    return { x: rect.x + (i % grid.gw) * cw, y: rect.y + Math.floor(i / grid.gw) * ch, w: cw, h: ch };
+  };
+  const draw = (pt) => {
+    p.paint();
+    p.placed = [];
+    if (!pt) {
+      const text = 'Point at any part of either image';
+      const { w, h } = pillSize(p, text, 13);
+      drawPill(p, (p.canvas.width - w) / 2, p.canvas.height - h - 8 * p.u, text, '#2563eb', 13, { solid: true });
+      return null;
+    }
+    const from = pt.side === 'a' ? { rect: p.a, grid: source.ga } : { rect: p.b, grid: source.gb };
+    const to = pt.side === 'a' ? { rect: p.b, grid: source.gb } : { rect: p.a, grid: source.ga };
+    const gx = Math.min(from.grid.gw - 1, Math.max(0, Math.floor(pt.fx * from.grid.gw)));
+    const gy = Math.min(from.grid.gh - 1, Math.max(0, Math.floor(pt.fy * from.grid.gh)));
+    const cellIdx = gy * from.grid.gw + gx;
+    const values = source.row(pt.side, cellIdx);
+    let best = 0;
+    for (let i = 1; i < values.length; i++) if (values[i] > values[best]) best = i;
+    // dim the other image, then glow wherever it resembles the pointed-at spot
+    p.g.save();
+    p.g.fillStyle = 'rgba(8, 12, 22, 0.45)';
+    p.g.fillRect(to.rect.x, to.rect.y, to.rect.w, to.rect.h);
+    p.g.restore();
+    heat(to.rect, to.grid, values, source.lo(values), source.hi(values));
+    const src = cellRect(from.rect, from.grid, cellIdx);
+    const dst = cellRect(to.rect, to.grid, best);
+    const eSrc = { cx: src.x + src.w / 2, cy: src.y + src.h / 2, rx: Math.max(src.w, 16 * p.u) * 0.75, ry: Math.max(src.h, 16 * p.u) * 0.75 };
+    const eDst = { cx: dst.x + dst.w / 2, cy: dst.y + dst.h / 2, rx: Math.max(dst.w, 16 * p.u) * 0.75, ry: Math.max(dst.h, 16 * p.u) * 0.75 };
+    markerEllipse(p, eSrc, '#2563eb', 3, { width: 3 });
+    markerEllipse(p, eDst, '#16a34a', 5, { width: 3.4 });
+    const a0 = edgePoint(eSrc, eDst.cx, eDst.cy);
+    const a1 = edgePoint(eDst, eSrc.cx, eSrc.cy);
+    curvedArrow(p, a0, a1, '#16a34a', { bend: eSrc.cy < p.a.y + p.a.h / 2 ? -0.15 : 0.15, width: 3 });
+    labelFor(p, eDst, to.rect, `${source.word} ${source.format(values[best])}`, '#16a34a', { size: 12 });
+    return { value: values[best], side: pt.side };
+  };
+  draw(null);
+  return { ...p, draw };
 }
 
 /** Which annotation (by number) is under a click, if any. */

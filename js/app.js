@@ -82,6 +82,7 @@ const state = {
   viewChosen: false,
   whereLens: null,
   whereChosen: false,
+  probeSource: 'dino',
   openGroups: new Set(['neural', 'objects']),
   objectView: 'markup',
   objectHighlight: null,
@@ -876,7 +877,7 @@ const LENS_GROUPS = [
   {
     title: 'Marked up',
     note: 'Circles, numbers and arrows that point at what changed and what was carried over.',
-    ids: ['diff', 'regions', 'evidence'],
+    ids: ['diff', 'evidence', 'regions', 'probe'],
   },
   {
     title: 'Same content?',
@@ -925,10 +926,17 @@ const VIEWS = {
   },
   evidence: {
     label: 'Copy evidence (SSCD)',
-    need: (v) => v.sscd,
-    what: 'SSCD’s copy score is one number, but it can be split exactly into contributions from each region of the image (plus a constant close to zero). The heat map shows that split and the circles mark its peaks: the regions that supplied most of the evidence for the score. Everything fades when the score itself is low.',
-    means: 'This is what the copy detector “looked at”. Evidence on the subject means SSCD is matching the reproduced content; evidence on a watermark, caption or border means the score may reflect that shared element more than the work itself.',
-    ref: { label: 'Stylianou, Souvenir & Pless, Visualizing Deep Similarity Networks (2019)', url: 'https://arxiv.org/abs/1901.00536' },
+    need: (v) => v.sscd?.links,
+    what: 'SSCD’s copy score is one number, but because the model adds up evidence from every location of each image, the score splits exactly into pairs: a location in A together with a location in B. Each part of A is joined to the part of B it pairs with most strongly; neighbouring parts that move together form one link, drawn in one colour with an arrow whose width is its share of the score. The bar underneath adds the links up to the score.',
+    means: 'This is what the copy detector itself relied on — not a separate guess. Arrows that run parallel mean B reproduces A in place; arrows that cross mean a mirror image; arrows that fan out from a small part of A mean B is an enlarged crop. Evidence on a watermark, caption or border means the score may reflect that shared element more than the work itself.',
+    ref: { label: 'Eberle et al., Building and Interpreting Deep Similarity Models (BiLRP), TPAMI 2020', url: 'https://arxiv.org/abs/2003.05431' },
+  },
+  probe: {
+    label: 'Point and compare',
+    need: (v) => v.dino?.featsA || v.sscd?.pairs,
+    what: 'Point at any spot in A or B. The other image lights up wherever something resembles that spot, and an arrow lands on the closest match. Choose DINOv2 features (what things look like, robust to redrawing) or SSCD’s pairwise copy evidence (what the copy detector pairs with that spot).',
+    means: 'A hands-on test of correspondence: if the girl’s face in A lands on the girl’s face in B, and the background lands on the background, the two works share that element. If points land somewhere random, with dim glows, nothing specific corresponds.',
+    ref: { label: 'Amir et al., Deep ViT Features as Dense Visual Descriptors (2021)', url: 'https://arxiv.org/abs/2112.05814' },
   },
   matches: {
     label: 'Keypoint matches',
@@ -1100,18 +1108,20 @@ function defaultLens(v, available) {
   const ann = v?.annotations;
   const prefer = [];
   if (ann?.aligned && (ann.differences.length || ann.global)) prefer.push('diff');
+  if (ann?.overlap && ann.overlap.coverA < 0.92) prefer.push('diff');
+  if (v?.sscd?.links?.links.length && v.sscd.score >= 0.3) prefer.push('evidence');
   if (ann?.regions?.length) prefer.push('regions');
   if (ann?.aligned) prefer.push('diff');
-  prefer.push('parts', 'evidence', 'heat', 'swipe');
+  prefer.push('probe', 'parts', 'evidence', 'heat', 'swipe');
   return prefer.find((id) => available.includes(id));
 }
 
-const ANN_LENSES = new Set(['diff', 'regions', 'evidence']);
+const ANN_LENSES = new Set(['diff', 'regions', 'evidence', 'probe']);
 
 function evidenceUnderlay(p) {
   const e = state.visuals.sscd;
   const peak = (grid) => Math.max(1e-9, ...grid.values);
-  const strength = Math.max(0.15, Math.min(1, (e.score - 0.15) / 0.45));
+  const strength = 0.45 * Math.max(0.15, Math.min(1, (e.score - 0.15) / 0.45));
   heatOverlay(p.g, e.a, p.a, (x) => x / peak(e.a), strength);
   heatOverlay(p.g, e.b, p.b, (x) => x / peak(e.b), strength);
 }
@@ -1119,20 +1129,25 @@ function evidenceUnderlay(p) {
 /** Text under a marked-up lens. */
 function annotationNote(id) {
   const v = state.visuals;
-  const ann = v.annotations;
+  const ann = v.annotations || {};
   if (id === 'diff') {
-    if (ann.global) return 'After alignment B differs from A almost everywhere (recoloured, filtered or redrawn), so there are no isolated spots to circle. Try the Matching regions lens.';
-    if (!ann.differences.length) return 'After alignment no part of B differs from A beyond tiny shifts: as far as the pixels go, B is a faithful copy of A.';
+    const o = ann.overlap;
+    const crop = o && o.coverA < 0.92 ? ` The dashed outline marks the ${Math.round(o.coverA * 100)}% of A that B shows; the arrows run from its corners to B’s corners.` : '';
+    if (ann.global) return `After alignment B differs from A almost everywhere (recoloured, filtered or redrawn), so there are no isolated spots to circle.${crop}`;
+    if (!ann.differences.length) return `After alignment no part of B differs from A beyond tiny shifts: as far as the pixels go, B is a faithful copy of A.${crop}`;
     const n = ann.differences.length;
-    return `${n} difference${n === 1 ? '' : 's'} circled, largest first. Point at (or tap) a number to single it out.`;
+    return `${n} difference${n === 1 ? '' : 's'} circled, largest first.${crop} Point at (or tap) a number to single it out.`;
   }
   if (id === 'regions') {
     const n = ann.regions.length;
     const whole = ann.regions[0] && ann.regions[0].share >= 0.6;
     return `${whole ? 'Nearly all of A reappears in B. ' : ''}${n} matching region${n === 1 ? '' : 's'}, joined A → B; the percentage is how alike their patches are. Point at (or tap) one to follow its arrow.`;
   }
+  if (id === 'probe') return 'Point at any part of either image (or tap it). The other image lights up wherever something resembles that spot, and the arrow lands on the closest match. Click to pin a point.';
   const e = v.sscd;
-  return `SSCD score ${e.score.toFixed(3)}: the heat adds up to this score, and the circles mark where most of it comes from.${e.score < 0.5 ? ' Everything is faint because SSCD finds little copy evidence overall.' : ''}`;
+  const n = e.links?.links.length || 0;
+  if (!n) return `SSCD score ${e.score.toFixed(3)}: ${e.score < 0.1 ? 'no copy evidence to trace.' : 'the evidence is spread thinly, with no part of A clearly supporting a part of B.'}`;
+  return `SSCD score ${e.score.toFixed(3)}, split exactly by which part of A pairs with which part of B. Each arrow’s width is its share of the score; matching colours mark the two halves of each pair.${e.score < 0.5 ? ' The score is low, so treat these as weak hints.' : ''}`;
 }
 
 /** Where a box sits in its image, in words ("top left", "centre"). */
@@ -1144,8 +1159,174 @@ function placeName(box, img) {
   return [v, h].filter(Boolean).join(' ') || 'centre';
 }
 
+/** What the pattern of copy-evidence arrows says about how B was made from A. */
+function arrowPattern(links, overlap) {
+  const L = links.filter((k) => k.weight > 0);
+  if (overlap && overlap.coverA < 0.9) return `The arrows spread out from the ${Math.round(overlap.coverA * 100)}% of A that B shows: B is a crop of A.`;
+  if (L.length < 3) return '';
+  const w = L.map((k) => k.weight);
+  const W = w.reduce((t, x) => t + x, 0);
+  const mean = (f) => L.reduce((t, k, i) => t + w[i] * f(k), 0) / W;
+  const corr = (fa, fb) => {
+    const ma = mean(fa);
+    const mb = mean(fb);
+    const cov = mean((k) => (fa(k) - ma) * (fb(k) - mb));
+    const va = mean((k) => (fa(k) - ma) ** 2);
+    const vb = mean((k) => (fb(k) - mb) ** 2);
+    return { r: cov / Math.sqrt(Math.max(1e-9, va * vb)), spread: Math.sqrt(vb / Math.max(1e-9, va)) };
+  };
+  const x = corr((k) => k.ca[0], (k) => k.cb[0]);
+  const y = corr((k) => k.ca[1], (k) => k.cb[1]);
+  if (x.r < -0.6 && y.r > 0.6) return 'The arrows swap left and right: B is a mirror image of A.';
+  if (y.r < -0.6 && x.r > 0.6) return 'The arrows swap top and bottom: B is upside down relative to A.';
+  if (x.r > 0.6 && y.r > 0.6) {
+    const grow = Math.sqrt(x.spread * y.spread);
+    if (grow > 1.2) return 'The arrows fan out from a smaller area of A: B enlarges part of A (a crop).';
+    if (grow < 0.75) return 'The arrows converge on a smaller area of B: A appears shrunk inside B.';
+    return 'The arrows keep their places: each part of A reappears in the same position in B.';
+  }
+  return 'The arrows do not follow one simple pattern: B rearranges what it shares with A.';
+}
+
+/** "0.78 = 0.31 + 0.20 + … " — the copy score as the sum of its links. */
+function scoreBreakdown(sscd) {
+  const L = sscd.links;
+  if (!L || !L.links.length) return '';
+  const pos = Math.max(1e-9, L.positive);
+  const bar = el(
+    'div',
+    { class: 'sb-bar', role: 'img', 'aria-label': 'Copy score split into its parts' },
+    L.links.map((k, i) => el('i', { style: `width:${(100 * Math.max(0, k.weight)) / pos}%;background:${AV.PALETTE[i % AV.PALETTE.length]}`, title: `${i + 1}: +${k.weight.toFixed(3)}` })),
+    L.rest > 0 ? el('i', { class: 'sb-rest', style: `width:${(100 * L.rest) / pos}%`, title: `elsewhere: +${L.rest.toFixed(3)}` }) : '',
+  );
+  const terms = [];
+  L.links.forEach((k, i) => {
+    if (i) terms.push(' + ');
+    terms.push(el('b', { class: 'sb-chip', style: `background:${AV.PALETTE[i % AV.PALETTE.length]}` }, `${i + 1}`), ` ${k.weight.toFixed(2)}`);
+  });
+  if (L.rest > 0.005) terms.push(` + ${L.rest.toFixed(2)} elsewhere`);
+  if (L.negative < -0.005) terms.push(` − ${(-L.negative).toFixed(2)} from parts that differ`);
+  const pattern = arrowPattern(L.links, state.visuals.annotations?.overlap);
+  return el('div', { class: 'score-break' }, bar, el('p', {}, el('strong', {}, `${sscd.score.toFixed(2)} ≈ `), ...terms), pattern ? el('p', { class: 'sb-pattern' }, pattern) : '');
+}
+
+/** Point-and-compare: the controls and the live canvas. */
+function probeView(cssWidth) {
+  const v = state.visuals;
+  const A = state.slots.a.bitmap;
+  const B = state.slots.b.bitmap;
+  const sources = [];
+  if (v.dino?.featsA) {
+    const d = v.dino;
+    const D = d.dims;
+    const row = (side, idx) => {
+      const [src, dst] = side === 'a' ? [d.featsA, d.featsB] : [d.featsB, d.featsA];
+      const n = dst.length / D;
+      const out = new Float32Array(n);
+      const o = idx * D;
+      for (let j = 0; j < n; j++) {
+        let sum = 0;
+        const q = j * D;
+        for (let k = 0; k < D; k++) sum += src[o + k] * dst[q + k];
+        out[j] = sum;
+      }
+      return out;
+    };
+    sources.push({ id: 'dino', label: 'What it looks like (DINOv2)', ga: d.a, gb: d.b, row, lo: () => 0.3, hi: () => 0.85, word: 'closest match', format: (x) => x.toFixed(2) });
+  }
+  if (v.sscd?.pairs) {
+    const e = v.sscd;
+    const nA = e.a.gw * e.a.gh;
+    const nB = e.b.gw * e.b.gh;
+    const row = (side, idx) => {
+      const out = new Float32Array(side === 'a' ? nB : nA);
+      if (side === 'a') for (let m = 0; m < nB; m++) out[m] = e.pairs[idx * nB + m];
+      else for (let l = 0; l < nA; l++) out[l] = e.pairs[l * nB + idx];
+      return out;
+    };
+    sources.push({
+      id: 'sscd',
+      label: 'Copy evidence (SSCD)',
+      ga: e.a,
+      gb: e.b,
+      row,
+      lo: () => 0,
+      hi: (vals) => Math.max(1e-6, ...vals),
+      word: 'strongest pairing',
+      format: (x) => `${x >= 0 ? '+' : ''}${x.toFixed(3)}`,
+    });
+  }
+  if (!sources.length) return el('p', { class: 'muted small' }, 'Turn on DINOv2 or SSCD in Settings to point and compare.');
+  if (!sources.some((x) => x.id === state.probeSource)) state.probeSource = sources[0].id;
+  const holder = el('div', { class: 'ann-stage' });
+  const readout = el('p', { class: 'probe-readout' }, '');
+  let pinned = null;
+  let st = null;
+  const build = () => {
+    const src = sources.find((x) => x.id === state.probeSource);
+    st = AV.probeStage(A, B, src, { cssWidth });
+    holder.replaceChildren(st.canvas);
+    st.canvas.style.cursor = 'crosshair';
+    st.canvas.style.touchAction = 'none';
+    const at = (e) => {
+      const r = st.canvas.getBoundingClientRect();
+      const x = ((e.clientX - r.left) / r.width) * st.canvas.width;
+      const y = ((e.clientY - r.top) / r.height) * st.canvas.height;
+      for (const side of ['a', 'b']) {
+        const R = st[side];
+        if (x >= R.x && x < R.x + R.w && y >= R.y && y < R.y + R.h) return { side, fx: (x - R.x) / R.w, fy: (y - R.y) / R.h };
+      }
+      return null;
+    };
+    const show = (pt) => {
+      const res = st.draw(pt);
+      readout.textContent = res
+        ? `Pointing at ${res.side.toUpperCase()}: the ${src.word} in ${res.side === 'a' ? 'B' : 'A'} is ${src.format(res.value)}${src.id === 'dino' ? ' (cosine of DINOv2 patch features; 1 = identical, unrelated photos rarely pass 0.5)' : ' of the copy score, from this one pair of locations'}.`
+        : '';
+    };
+    st.canvas.onpointermove = (e) => {
+      if (!pinned) show(at(e));
+    };
+    st.canvas.onpointerleave = () => {
+      if (!pinned) show(null);
+    };
+    st.canvas.onclick = (e) => {
+      const pt = at(e);
+      pinned = pinned || !pt ? null : pt;
+      show(pt);
+    };
+    show(pinned);
+  };
+  const pills =
+    sources.length > 1
+      ? el(
+          'div',
+          { class: 'lens-pills probe-pills' },
+          sources.map((src) =>
+            el(
+              'button',
+              {
+                type: 'button',
+                class: 'pill',
+                'aria-pressed': String(src.id === state.probeSource),
+                onclick: (e) => {
+                  state.probeSource = src.id;
+                  for (const b of e.currentTarget.parentElement.children) b.setAttribute('aria-pressed', String(b === e.currentTarget));
+                  build();
+                },
+              },
+              src.label,
+            ),
+          ),
+        )
+      : '';
+  build();
+  return el('div', { class: 'ann-view ann-probe' }, pills, holder, readout);
+}
+
 /** A marked-up view: annotated canvas plus a numbered list of close-ups. */
 function annotatedView(id, cssWidth) {
+  if (id === 'probe') return probeView(cssWidth);
   const v = state.visuals;
   const ann = v.annotations || { differences: [], regions: [] };
   const A = state.slots.a.bitmap;
@@ -1153,6 +1334,7 @@ function annotatedView(id, cssWidth) {
   const holder = el('div', { class: 'ann-stage' });
   let focus = null;
   let stageNow = null;
+  const score = v.sscd?.score ?? 0;
   const items =
     id === 'diff'
       ? ann.differences.map((d) => {
@@ -1173,7 +1355,18 @@ function annotatedView(id, cssWidth) {
             sub: `${Math.round(r.sim * 100)}% alike · ${Math.max(1, Math.round(r.share * 100))}% of A`,
             thumbs: r.thumbs,
           }))
-        : [];
+        : (v.sscd?.links?.links || []).map((k, i) => {
+            const extra = ann.copyLinks?.[i];
+            const where = `${placeName(k.boxA, { w: 1, h: 1 })} of A → ${placeName(k.boxB, { w: 1, h: 1 })} of B`;
+            const name = extra && (extra.labelA || extra.labelB) ? `${AV.regionName({ labelA: extra.labelA, labelB: extra.labelB, share: 0 })} · ${where}` : where;
+            return {
+              n: i + 1,
+              color: AV.PALETTE[i % AV.PALETTE.length],
+              title: name,
+              sub: `+${k.weight.toFixed(2)} of the ${score.toFixed(2)} score${score > 0.05 ? ` (${Math.round((100 * k.weight) / score)}%)` : ''}`,
+              thumbs: extra?.thumbs,
+            };
+          });
   const list = el(
     'ol',
     { class: 'ann-list' },
@@ -1198,7 +1391,7 @@ function annotatedView(id, cssWidth) {
   const draw = () => {
     if (id === 'diff') stageNow = AV.drawDifferences(A, B, ann, { cssWidth, focus });
     else if (id === 'regions') stageNow = AV.drawRegions(A, B, ann, { cssWidth, focus });
-    else stageNow = AV.drawEvidence(A, B, ann?.peaks ? ann : { peaks: { score: v.sscd.score, a: [], b: [] } }, { cssWidth, underlay: evidenceUnderlay });
+    else stageNow = AV.drawCopyLinks(A, B, v.sscd, { cssWidth, focus, underlay: evidenceUnderlay });
     stageNow.canvas.onclick = (e) => {
       const n = AV.hitTest(stageNow, e);
       setFocus(n === focus ? null : n);
@@ -1214,13 +1407,14 @@ function annotatedView(id, cssWidth) {
     draw();
   }
   draw();
-  return el('div', { class: `ann-view ann-${id}` }, holder, items.length ? list : '', id === 'evidence' ? el('div', { class: 'colorbar' }, 'no evidence', el('i'), 'most evidence') : '');
+  return el('div', { class: `ann-view ann-${id}` }, holder, id === 'evidence' ? scoreBreakdown(v.sscd) : '', items.length ? list : '');
 }
 
 const WHERE_LENSES = [
   { id: 'diff', label: 'Differences', need: (v) => v.annotations?.aligned },
+  { id: 'evidence', label: 'Copy evidence', need: (v) => v.sscd?.links },
   { id: 'regions', label: 'Matching regions', need: (v) => v.annotations?.regions?.length },
-  { id: 'evidence', label: 'Copy evidence', need: (v) => v.sscd && v.annotations?.peaks },
+  { id: 'probe', label: 'Point and compare', need: (v) => v.dino?.featsA || v.sscd?.pairs },
   { id: 'parts', label: 'Matching parts', need: (v) => v.dino, short: 'Same-coloured dots mark parts of A and B that DINOv2 finds most alike (mutual best matches).' },
   { id: 'heat', label: 'Heat map', need: (v) => v.dino, short: 'How closely every region of each image has a counterpart in the other.' },
 ];

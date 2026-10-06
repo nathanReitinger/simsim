@@ -2586,3 +2586,69 @@ details.group[open] .group-head {
     grid-template-columns: 1fr;
   }
 }
+
+/* copy-score breakdown and point-and-compare */
+
+.score-break {
+  width: 100%;
+  max-width: 760px;
+}
+
+.sb-bar {
+  display: flex;
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--surface-3);
+}
+
+.sb-bar i {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-right: 2px solid var(--surface);
+}
+
+.sb-bar i.sb-rest {
+  background: repeating-linear-gradient(135deg, var(--border-strong) 0 6px, var(--surface-3) 6px 12px);
+}
+
+.score-break p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.score-break strong {
+  color: var(--text);
+}
+
+.sb-chip {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 11px;
+  vertical-align: -3px;
+}
+
+.probe-pills {
+  justify-content: center;
+}
+
+.probe-readout {
+  min-height: 1.4em;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.score-break p.sb-pattern {
+  margin-top: 2px;
+  color: var(--text);
+  font-weight: 600;
+}
