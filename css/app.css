@@ -230,6 +230,32 @@ main {
   letter-spacing: -0.02em;
 }
 
+/* the site's thesis, under the main heading */
+.thesis {
+  max-width: 760px;
+  margin: 16px auto 0;
+  padding: 14px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+
+.thesis p {
+  margin: 0;
+  font-size: 14.5px;
+  color: var(--muted);
+}
+
+.thesis .thesis-head {
+  margin-bottom: 6px;
+  font-size: 17px;
+  color: var(--text);
+}
+
+.thesis strong {
+  font-weight: 700;
+}
+
 .lede {
   max-width: 720px;
   margin: 12px auto 28px;

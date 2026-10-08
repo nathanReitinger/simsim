@@ -6,7 +6,7 @@
     <title>Image Similarity Scanner</title>
     <meta
       name="description"
-      content="Compare two images with 35 similarity tests — SSCD copy detection, perceptual hashes (PDQ, pHash), SSIM, keypoint matching, CLIP and more. Runs entirely in your browser."
+      content="Computer similarity and legal similarity are two very different things. Compare two images with 101 similarity tests — from file hashes to Meta’s SSCD copy detector — and set the results beside real copyright cases. Runs entirely in your browser."
     />
     <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="css/app.css" />
@@ -42,6 +42,17 @@
     <main>
       <section class="hero" id="upload">
         <h1>Are these two images the same?</h1>
+        <div class="thesis">
+          <p class="thesis-head">
+            The point of this site: <strong>computer similarity and legal similarity are two very different things.</strong>
+          </p>
+          <p>
+            The tests here measure how alike two images are — their bytes, pixels and learned features. Copyright law asks
+            different questions: was protected expression copied, was it a substantial part, and was the use fair? A pair the
+            scanner flags as a possible copy can be lawful, and a pair it calls merely similar can infringe.
+            <a href="#cases">The real cases below</a> show both.
+          </p>
+        </div>
         <p class="lede">
           Drop two images and run <strong><span id="testCount">101</span> similarity tests</strong> side by side — from byte-level file hashes to Meta’s
           SSCD copy detector. Everything runs in your browser; <strong>your images are never uploaded</strong>.
@@ -181,9 +192,11 @@
       <section class="cases" id="cases" hidden>
         <h2>Copyright case examples</h2>
         <p class="cases-intro">
-          Cases where the works at issue are images. Image A is the plaintiff’s work and image B the defendant’s.
-          Compare a pair to see whether the similarity tests line up with what the court decided — and why they often
-          do not.
+          Real cases put the site’s point to the test. Image A is the plaintiff’s work and image B the defendant’s. Scan
+          a pair, or run them all, and set what the computer measures beside what the court held — they often disagree.
+          Koons had Rogers’s photograph re-made as a painted wooden sculpture, so the copy detectors see only a similar
+          subject, yet the court found infringement. Prince built his paintings from Cariou’s actual photographs, which
+          the detectors flag, yet the court held most of the series fair use.
         </p>
         <div class="case-tools">
           <select class="case-pick" aria-label="Choose a copyright case"></select>
@@ -197,6 +210,15 @@
       <section class="how" id="how">
         <h2>How it works</h2>
         <div class="how-grid">
+          <div class="how-card">
+            <h3>Computer similarity is not legal similarity</h3>
+            <p>
+              This is the point of the site. The numbers measure resemblance between files, pixels or learned features.
+              The law asks whether protectable expression was copied (not ideas, facts or stock elements), whether the
+              copying was substantial, and whether the use was fair. No metric answers those questions: treat the scores
+              as evidence to interpret, not conclusions.
+            </p>
+          </div>
           <div class="how-card">
             <h3>Many definitions of “the same”</h3>
             <p>
@@ -215,18 +237,10 @@
             </p>
           </div>
           <div class="how-card">
-            <h3>Similarity is not infringement</h3>
-            <p>
-              These numbers measure resemblance between pixels or learned features. Whether a resemblance is legally
-              significant — originality, protectable expression, substantial similarity, fair use — is a different question
-              that no metric answers. Treat the scores as evidence to interpret, not conclusions.
-            </p>
-          </div>
-          <div class="how-card">
             <h3>Private by design</h3>
             <p>
               Images are decoded and analysed on your device with WebAssembly (ONNX Runtime, OpenCV). The neural models are
-              downloaded once (≈ 200 MB in total, configurable in Settings) and cached by your browser.
+              downloaded once (≈ 410 MB in total, configurable in Settings) and cached by your browser.
             </p>
           </div>
         </div>
@@ -244,8 +258,9 @@
         (<a href="https://github.com/nathanReitinger" target="_blank" rel="noopener">@nathanReitinger</a>) — corrections and pull requests welcome.
       </div>
       <p>
-        Models: SSCD (Meta AI, MIT), DINOv2 (Meta AI, Apache-2.0), D-FINE (Apache-2.0), CLIP
-        (OpenAI, MIT), LPIPS (BSD-2). Libraries: ONNX Runtime Web (MIT), OpenCV.js (Apache-2.0), exifr (MIT). Sample photos:
+        Models: SSCD (Meta AI, MIT), DINOv2 (Meta AI, Apache-2.0), CLIP (OpenAI, MIT), DreamSim (MIT), LPIPS (BSD-2),
+        D-FINE (Apache-2.0), ViTPose (Apache-2.0), XFeat (Apache-2.0). Libraries: ONNX Runtime Web (MIT), OpenCV.js
+        (Apache-2.0), exifr (MIT), C2PA SDK (MIT). Sample photos:
         NASA, SpaceX (public domain), Stefan van der Walt and Rachel Michetti (CC0), via scikit-image.
       </p>
     </footer>

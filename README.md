@@ -2,6 +2,12 @@
 
 **Live site: <https://nathanreitinger.github.io/simsim/>**
 
+**The point of this site: computer similarity and legal similarity are two very different things.** The tests
+measure how alike two images are — their bytes, pixels and learned features. Copyright law asks different
+questions: was protected expression copied, was it a substantial part, and was the use fair? A pair the scanner
+flags as a possible copy can be lawful, and a pair it calls merely similar can infringe; the
+[copyright cases](#copyright-cases) show both.
+
 A VirusTotal-style scanner for image similarity. Drop two images and **101 tests** run side by side — from
 byte-level file hashes to Meta's **SSCD** copy detector — and the page reports how many of them flag the pair
 as similar, with an explanation of every test.
@@ -99,8 +105,11 @@ Sedlik v. Kat Von D) marked as such:
 
 Pick a case from the drop-down to scan its pair, or press **Run all cases** to scan every pair in turn and fill a
 table of the scanner’s verdict, similarity level, tests flagged, SSCD, DINOv2 shared parts and DreamSim beside
-the court’s holding. The table makes the course’s point concrete: high similarity is evidence of copying, but
-liability also turns on what was protectable, how much was taken and fair use. Images for the Warhol, Seuss,
+the court’s holding. The table makes the site’s point concrete. Koons had Rogers’s photograph re-made as a
+sculpture, so the copy detectors see only a similar subject, yet the court found infringement; Prince built his
+paintings from Cariou’s actual photographs, which the detectors flag, yet most of the series was held fair use.
+Computer similarity is at most evidence of copying; liability also turns on what was protectable, how much was
+taken and whether the use was fair. Images for the Warhol, Seuss,
 Rentmeester, Brammer and Blanch cases are taken from the published opinions; to add cases, see
 [`assets/cases/README.md`](assets/cases/README.md).
 

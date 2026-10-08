@@ -2826,7 +2826,7 @@ function renderCaseTable() {
     el(
       'p',
       { class: 'muted small' },
-      'Each pair scanned in turn with every test. Compare what the scanner measures with what the court held: similarity is evidence of copying, but infringement also turns on what was protectable, how much was taken and fair use.',
+      'Each pair scanned in turn with every test, beside the court’s holding. Expect the two to part ways: computer similarity is at most evidence of copying, while infringement also turns on what was protectable, how much was taken and whether the use was fair.',
     ),
     el(
       'div',
@@ -2939,7 +2939,7 @@ function renderCaseBanner() {
     el(
       'p',
       { class: 'muted small' },
-      'Do the tests below line up with the court? Similarity scores measure resemblance between pixels or learned features; what counts as protectable expression, how much was taken and whether the use was fair are questions they do not measure.',
+      'Computer similarity is not legal similarity. Do the tests below line up with the court? They measure resemblance between pixels or learned features; what counts as protectable expression, how much was taken and whether the use was fair are questions they do not answer.',
     ),
   ];
   box.append(...parts.filter(Boolean));
