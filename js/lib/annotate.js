@@ -422,6 +422,27 @@ export function findDifferences(cv, A, B, mask, { max = 15 } = {}) {
         }
       }
     }
+    // small fragments close together are pieces of one change (the strokes of a
+    // redrawn figure in line art); one side must be small, so separate changes
+    // that happen to sit side by side stay apart
+    const small = 0.004 * w * h;
+    merged = true;
+    while (merged) {
+      merged = false;
+      for (let i = 0; i < regions.length && !merged; i++) {
+        for (let j = i + 1; j < regions.length; j++) {
+          const p = regions[i].box;
+          const q = regions[j].box;
+          if (Math.min(area(p), area(q)) > small) continue;
+          const u = unionBox(p, q);
+          if (area(u) > 0.025 * w * h || gapBetween(p, q) > 0.035 * side) continue;
+          regions[i] = { box: u, score: regions[i].score + regions[j].score };
+          regions.splice(j, 1);
+          merged = true;
+          break;
+        }
+      }
+    }
     regions.sort((p, q) => q.score - p.score);
     // keep changes that carry a reasonable share of the strongest one
     const top = regions.length ? regions[0].score : 0;

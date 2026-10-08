@@ -771,6 +771,16 @@ function headline(results) {
   if (verdict('crop') === 'identical') {
     return { tone: 'identical', title: 'Verbatim crop', sub: `One image is an unaltered cut-out of the other (${results.crop.detail?.['best placement'] || ''}).` };
   }
+  // blank or pure-noise images: the learned detectors have nothing to go on
+  const odd = ['a', 'b'].filter((side) => state.info?.[side]?.structure && state.info[side].structure !== 'normal');
+  if (odd.length) {
+    const what = odd.map((side) => `${side.toUpperCase()} is ${state.info[side].structure === 'flat' ? 'almost a single colour' : 'random noise'}`).join(' and ');
+    return {
+      tone: 'none',
+      title: 'Too little structure to judge',
+      sub: `${what}, so the copy detectors and other learned scores are not meaningful here (they can rate any two blank or noisy images as alike). Only the exact and pixel tests below apply.`,
+    };
+  }
   const credits = stripped ? ' B also drops A’s creator and copyright fields.' : '';
   const derived =
     verdict('c2pa') === 'match'
@@ -854,6 +864,8 @@ function similarityLevel(R, V) {
   if (is('sha256', 'identical')) return { id: 'file', why: 'the SHA-256 digests are identical' };
   if (is('payload', 'identical')) return { id: 'pixels', why: 'the compressed image data is byte-identical; only the metadata differs' };
   if (is('pixels', 'identical')) return { id: 'pixels', why: 'every decoded pixel is identical' };
+  const odd = ['a', 'b'].some((side) => state.info?.[side]?.structure && state.info[side].structure !== 'normal');
+  if (odd) return { id: 'none', why: 'one of the images is blank or random noise, so the similarity tests have nothing meaningful to compare' };
   if ((is('pdq', 'match') || (is('phash', 'match') && is('dhash', 'match'))) && (is('msssim', 'match') || is('ssim', 'match'))) {
     return { id: 'resaved', why: 'the perceptual hashes match and the pixels line up' };
   }
@@ -1926,7 +1938,17 @@ function renderWhereCard() {
     ),
   );
   const width = Math.max(300, box.clientWidth - 36);
-  box.append(annotatedView(lens.id, width), el('p', { class: 'where-note' }, annotationNote(lens.id)));
+  box.append(...safeView(lens.id, width));
+}
+
+/** A marked-up view and its note; if drawing fails, say so instead of breaking the page. */
+function safeView(id, width) {
+  try {
+    return [annotatedView(id, width), el('p', { class: 'where-note' }, annotationNote(id))];
+  } catch (err) {
+    console.error(`view ${id} failed`, err);
+    return [el('p', { class: 'muted small' }, `This view could not be drawn for these images (${err.message || err}). The other views and all test results are unaffected.`)];
+  }
 }
 
 function drawHeatPair(left, right, toV, strength, maxCssWidth) {
@@ -2004,8 +2026,9 @@ function renderVisual() {
     return;
   }
   if (ANN_LENSES.has(state.view)) {
-    viewer.append(el('div', { class: 'lens-view' }, annotatedView(state.view, fullWidth)));
-    caption.textContent = annotationNote(state.view);
+    const [view, note] = safeView(state.view, fullWidth);
+    viewer.append(el('div', { class: 'lens-view' }, view));
+    caption.textContent = note ? note.textContent : '';
     return;
   }
   if (state.view === 'swipe') {
@@ -2613,12 +2636,15 @@ const SAMPLES = [
   { label: 'Lossless crop', a: 'rocket', params: { crop: 45, cropX: 55, cropY: 30, format: 'png' } },
   { label: 'Mirrored', a: 'astronaut', params: { flip: true } },
   { label: 'Unrelated images', a: 'coffee', b: 'chelsea' },
+  { label: 'Spot the difference (drawing)', a: 'farm-a.png', b: 'farm-b.png' },
 ];
 
 async function fetchSample(name) {
-  const res = await fetch(new URL(`assets/samples/${name}.jpg`, ROOT));
+  const file = name.includes('.') ? name : `${name}.jpg`;
+  const res = await fetch(new URL(`assets/samples/${file}`, ROOT));
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${file}`);
   const blob = await res.blob();
-  return new File([blob], `${name}.jpg`, { type: 'image/jpeg', lastModified: 0 });
+  return new File([blob], file, { type: file.endsWith('.png') ? 'image/png' : 'image/jpeg', lastModified: 0 });
 }
 
 async function loadSample(s) {
@@ -2889,7 +2915,40 @@ function init() {
   refreshDownloadNote();
   updateButtons();
   if ($('#testCount')) $('#testCount').textContent = String(ENGINES.length);
-  if (new URLSearchParams(location.search).has('debug')) window.scanner = { state, report };
+  if (new URLSearchParams(location.search).has('debug')) {
+    // test hook: draw every marked-up view and every tab view, report failures
+    const lensCheck = () => {
+      const out = {};
+      const v = state.visuals;
+      for (const l of WHERE_LENSES) {
+        if (!v || !l.need(v)) {
+          out[l.id] = 'n/a';
+          continue;
+        }
+        try {
+          annotatedView(l.id, 640);
+          out[l.id] = 'ok';
+        } catch (err) {
+          out[l.id] = `ERROR ${err.message}`;
+        }
+      }
+      const keep = state.view;
+      for (const id of Object.keys(VIEWS)) {
+        if (!v || !(id === 'side' || VIEWS[id].need(v))) continue;
+        try {
+          state.view = id;
+          renderVisual();
+          out[`tab:${id}`] = $('#viewer').textContent.includes('could not be drawn') ? 'FALLBACK' : 'ok';
+        } catch (err) {
+          out[`tab:${id}`] = `ERROR ${err.message}`;
+        }
+      }
+      state.view = keep;
+      renderVisual();
+      return out;
+    };
+    window.scanner = { state, report, lensCheck, setSlot, startScan };
+  }
   // the catalogue is built at runtime, so honour #anchors once it exists
   if (location.hash) document.querySelector(location.hash)?.scrollIntoView();
 }

@@ -2,11 +2,15 @@
 // each result back to the page as soon as it is ready.
 
 import { ENGINE_BY_ID, verdictFor } from './engines.js';
-import { md5, sha } from './lib/digest.js';
+import { blake2b256, crc32, md5, sha, sha3_256 } from './lib/digest.js';
+import { ssdeepCompare, ssdeepHash, tlshDiff, tlshHash } from './lib/fuzzy.js';
 import { cropImg, fitWithin, grayPIL, lumaFloat, resizeImg, rgbaToRgb } from './lib/pixels.js';
 import * as H from './lib/hashes.js';
+import * as IH from './lib/imghash.js';
 import * as Q from './lib/iqa.js';
 import * as G from './lib/histogram.js';
+import * as CS from './lib/colorstats.js';
+import * as TX from './lib/texture.js';
 import * as F from './lib/features.js';
 import * as N from './lib/neural.js';
 import * as O from './lib/objects.js';
@@ -26,10 +30,15 @@ const LPIPS_MAX = 256;
 const CROP_MAX = 640; // template search
 
 const ORDER = [
-  'sha256', 'sha1', 'md5', 'payload', 'pixels',
+  'sha256', 'sha1', 'md5', 'sha512', 'sha3', 'blake2b', 'crc32', 'payload', 'pixels',
+  'ssdeep', 'tlsh',
   'pdq', 'pdqDihedral', 'phash', 'dhash', 'ahash', 'whash', 'blockhash',
+  'phashSimple', 'dhashVertical', 'whashDb4', 'colorhash', 'cropResistant',
+  'blockMean0', 'blockMean1', 'marrHildreth', 'radialVariance', 'colorMoment',
   'ssim', 'msssim', 'psnr', 'ncc', 'uqi', 'gmsd', 'deltaE', 'changed', 'carlini',
   'histCorrel', 'histChi', 'histIntersect', 'histBhatt', 'lumaEmd',
+  'klDiv', 'jsDiv', 'ksLuma', 'hsvMoments', 'ccv', 'correlogram', 'paletteEmd', 'meanColor',
+  'gist', 'hog', 'gabor', 'glcm', 'lbp', 'zernike', 'huMoments',
   'exif', 'cmi', 'lineage', 'jpegq', 'thumbnail', 'sdmark',
   'crop', 'orb', 'akaze', 'brisk', 'xfeat', 'alignedSsim',
   'sscd', 'sscdAligned', 'sscdLarge', 'dino', 'clip', 'dreamsim', 'lpips',
@@ -212,7 +221,6 @@ class Ctx {
   hist(kind) {
     return this.get(`hist-${kind}`, () => {
       const p = this.pair;
-      if (kind === 'hs') return [G.hsHistogram(p.A.rgb), G.hsHistogram(p.B.rgb)];
       if (kind === 'rgb') return [G.rgbHistogram(p.A.rgb), G.rgbHistogram(p.B.rgb)];
       return [G.grayHistogram(p.YA), G.grayHistogram(p.YB)];
     });
@@ -222,11 +230,26 @@ class Ctx {
     return this.get(`hash-${side}-${kind}`, () => {
       let img = this[side].work;
       if (kind === 'blockhash' && (img.w < 16 || img.h < 16)) img = resizeImg(img, ...atLeast([img.w, img.h], 16), 'bilinear');
-      const fn = { ahash: H.averageHash, dhash: H.differenceHash, phash: H.perceptualHash, whash: H.waveletHash, blockhash: H.blockHash, pdq: H.pdqHash }[kind];
+      const fn = {
+        ahash: H.averageHash,
+        dhash: H.differenceHash,
+        phash: H.perceptualHash,
+        whash: H.waveletHash,
+        blockhash: H.blockHash,
+        pdq: H.pdqHash,
+        phashSimple: H.perceptualHashSimple,
+        dhashVertical: H.differenceHashVertical,
+        colorhash: H.colorHash,
+      }[kind];
       const out = fn(img);
       this.info[side][kind] = kind === 'pdq' ? `${out.hex} (quality ${out.quality})` : H.bitsToHex(out);
       return out;
     });
+  }
+
+  /** The image shrunk to at most 256 px (box filter), for global colour descriptors. */
+  small(side) {
+    return this.get(`small-${side}`, () => CS.shrink(this[side].work, 256));
   }
 
   featureImg(side) {
@@ -252,6 +275,29 @@ const exact = (x, y) => ({
   display: x === y ? 'identical' : 'different',
   detail: { A: x, B: y },
 });
+
+const toHex = (bytes) => Array.from(bytes, (v) => v.toString(16).padStart(2, '0')).join('');
+
+/** CIELAB (D65) -> '#rrggbb', for showing palette colours. */
+function labToHex([L, a, b]) {
+  const fy = (L + 16) / 116;
+  const f = (t) => (t > 6 / 29 ? t ** 3 : 3 * (6 / 29) ** 2 * (t - 4 / 29));
+  const X = 0.95047 * f(fy + a / 500);
+  const Y = f(fy);
+  const Z = 1.08883 * f(fy - b / 200);
+  const lin = [3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z, -0.969266 * X + 1.8760108 * Y + 0.041556 * Z, 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z];
+  const srgb = lin.map((v) => Math.round(255 * Math.min(1, Math.max(0, v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055))));
+  return `#${srgb.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** One of OpenCV's img_hash hashes (bytes), compared by Hamming distance. */
+async function cvHash(c, key, fn, nBits) {
+  const cv = await loadOpenCV();
+  const a = c.get(`${key}-a`, () => fn(cv, c.a.work));
+  const b = c.get(`${key}-b`, () => fn(cv, c.b.work));
+  const d = IH.hammingBytes(a, b);
+  return { value: d, display: `${d} / ${nBits} bits`, detail: { A: toHex(a), B: toHex(b) } };
+}
 
 const hamming64 = (kind) => (c) => {
   const a = c.hash('a', kind);
@@ -322,7 +368,10 @@ function featureVerdict(c, r) {
   };
 }
 
+const TOO_SMALL = (c) => Math.min(c.a.w, c.a.h, c.b.w, c.b.h) < 32;
+
 async function featureRun(c, kind) {
+  if (TOO_SMALL(c)) return { verdict: 'na', display: 'too small', note: 'Keypoint detectors need images at least 32 pixels on each side.' };
   const cv = await loadOpenCV();
   const r = F.matchFeatures(cv, c.featureImg('a'), c.featureImg('b'), kind);
   c.features[kind] = r;
@@ -598,6 +647,21 @@ const RUN = {
   sha256: async (c) => exact(await sha('SHA-256', c.a.bytes), await sha('SHA-256', c.b.bytes)),
   sha1: async (c) => exact(await sha('SHA-1', c.a.bytes), await sha('SHA-1', c.b.bytes)),
   md5: (c) => exact(md5(c.a.bytes), md5(c.b.bytes)),
+  sha512: async (c) => exact(await sha('SHA-512', c.a.bytes), await sha('SHA-512', c.b.bytes)),
+  sha3: (c) => exact(sha3_256(c.a.bytes), sha3_256(c.b.bytes)),
+  blake2b: (c) => exact(blake2b256(c.a.bytes), blake2b256(c.b.bytes)),
+  crc32: (c) => exact(crc32(c.a.bytes), crc32(c.b.bytes)),
+  ssdeep(c) {
+    const a = ssdeepHash(c.a.bytes);
+    const b = ssdeepHash(c.b.bytes);
+    return { value: ssdeepCompare(a, b), detail: { A: a, B: b } };
+  },
+  tlsh(c) {
+    const a = tlshHash(c.a.bytes);
+    const b = tlshHash(c.b.bytes);
+    if (!a || !b) return { verdict: 'na', display: 'n/a', note: 'TLSH needs at least 50 bytes with some variety; one of the files is too small or too uniform.' };
+    return { value: tlshDiff(a, b), detail: { A: a, B: b } };
+  },
 
   async payload(c) {
     // the encoded image data with every metadata segment set aside
@@ -671,6 +735,56 @@ const RUN = {
     const a = c.hash('a', 'blockhash');
     const b = c.hash('b', 'blockhash');
     return { value: H.hamming(a, b), detail: { A: H.bitsToHex(a), B: H.bitsToHex(b) } };
+  },
+  phashSimple: hamming64('phashSimple'),
+  dhashVertical: hamming64('dhashVertical'),
+  colorhash: hamming64('colorhash'),
+  whashDb4(c) {
+    let a = H.waveletHashDb4(c.a.work);
+    let b = H.waveletHashDb4(c.b.work);
+    let note;
+    if (a.side !== b.side) {
+      // imagehash picks a scale per image; for very small images the bands differ in size
+      const scale = Math.min(a.scale, b.scale);
+      a = H.waveletHashDb4(c.a.work, 8, scale);
+      b = H.waveletHashDb4(c.b.work, 8, scale);
+      note = `Both images were hashed at ${scale}×${scale} so the hashes have the same length.`;
+    }
+    const d = H.hamming(a.bits, b.bits);
+    return { value: d, display: `${d} / ${a.bits.length} bits`, detail: { A: H.bitsToHex(a.bits), B: H.bitsToHex(b.bits) }, note };
+  },
+  cropResistant(c) {
+    const seg = (side) =>
+      c.get(`crh-${side}`, () => {
+        const img = c[side].work;
+        const [w, h] = fitWithin(img.w, img.h, 1024);
+        return H.cropResistantHash(resizeImg(img, w, h, 'box'));
+      });
+    const a = seg('a');
+    const b = seg('b');
+    const ab = H.cropResistantCompare(a, b);
+    const ba = H.cropResistantCompare(b, a);
+    const value = Math.min(ab.matches / ab.total, ba.matches / ba.total);
+    return {
+      value,
+      display: `${Math.round(value * 100)}% of segments`,
+      detail: { 'segments of A found in B': `${ab.matches} of ${ab.total}`, 'segments of B found in A': `${ba.matches} of ${ba.total}` },
+    };
+  },
+  blockMean0: (c) => cvHash(c, 'blockMean0', (cv, img) => IH.blockMeanHash(cv, img, 0), 256),
+  blockMean1: (c) => cvHash(c, 'blockMean1', (cv, img) => IH.blockMeanHash(cv, img, 1), 961),
+  marrHildreth: (c) => cvHash(c, 'marrHildreth', IH.marrHildrethHash, 576),
+  async radialVariance(c) {
+    const cv = await loadOpenCV();
+    const a = c.get('rvh-a', () => IH.radialVarianceHash(cv, c.a.work));
+    const b = c.get('rvh-b', () => IH.radialVarianceHash(cv, c.b.work));
+    return { value: IH.radialVarianceCorrelation(a, b), detail: { A: toHex(a), B: toHex(b) } };
+  },
+  async colorMoment(c) {
+    const cv = await loadOpenCV();
+    const a = c.get('cmh-a', () => IH.colorMomentHash(cv, c.a.work));
+    const b = c.get('cmh-b', () => IH.colorMomentHash(cv, c.b.work));
+    return { value: IH.colorMomentDistance(a, b) };
   },
 
   ssim(c) {
@@ -885,11 +999,77 @@ const RUN = {
     };
   },
 
-  histCorrel: (c) => ({ value: G.correlation(...c.hist('hs')) }),
-  histChi: (c) => ({ value: G.chiSquare(...c.hist('hs')) }),
+  histCorrel: (c) => ({ value: G.correlation(...c.hist('rgb')) }),
+  histChi: (c) => ({ value: G.chiSquare(...c.hist('rgb')) }),
   histIntersect: (c) => ({ value: G.intersection(...c.hist('rgb')) }),
-  histBhatt: (c) => ({ value: G.bhattacharyya(...c.hist('hs')) }),
+  histBhatt: (c) => ({ value: G.bhattacharyya(...c.hist('rgb')) }),
   lumaEmd: (c) => ({ value: G.emd1d(...c.hist('luma')) }),
+  klDiv: (c) => ({ value: CS.klDivergence(...c.hist('rgb')) }),
+  jsDiv: (c) => ({ value: CS.jensenShannon(...c.hist('rgb')) }),
+  ksLuma: (c) => ({ value: CS.ksStatistic(c.pair.GA, c.pair.GB) }),
+  hsvMoments: (c) => ({ value: CS.colorMomentsDistance(CS.colorMoments(c.small('a')), CS.colorMoments(c.small('b'))) }),
+  ccv: (c) => ({ value: CS.coherenceDistance(CS.colorCoherence(c.small('a')), CS.colorCoherence(c.small('b'))) }),
+  correlogram: (c) => ({ value: CS.correlogramDistance(CS.autoCorrelogram(c.small('a')), CS.autoCorrelogram(c.small('b'))) }),
+  paletteEmd(c) {
+    const pa = CS.dominantColors(CS.shrink(c.a.work, 128));
+    const pb = CS.dominantColors(CS.shrink(c.b.work, 128));
+    const swatch = (p) => p.map((x) => `${labToHex(x.lab)} ${Math.round(x.weight * 100)}%`).join(', ');
+    return { value: CS.paletteEmd(pa, pb), detail: { 'palette A': swatch(pa), 'palette B': swatch(pb) } };
+  },
+  gist: (c) => ({ value: TX.euclidean(...['a', 'b'].map((k) => TX.gistDescriptor(TX.gistInput(c[k].work)))) }),
+  hog(c) {
+    const f = (k) => TX.hogDescriptor(grayPIL(resizeImg(c[k].work, 128, 128, 'bilinear')), 128, 128);
+    return { value: TX.cosine(f('a'), f('b')), note: c.aspectNote() };
+  },
+  gabor(c) {
+    const f = (k) => {
+      const s = CS.shrink(c[k].work, 128);
+      return TX.gaborFeatures(Float64Array.from(grayPIL(s), (v) => v / 255), s.w, s.h);
+    };
+    return { value: TX.canberra(f('a'), f('b')) };
+  },
+  glcm(c) {
+    const f = (k) => {
+      const s = c.small(k);
+      return TX.glcmFeatures(grayPIL(s), s.w, s.h);
+    };
+    return { value: TX.canberra(f('a'), f('b')) };
+  },
+  lbp(c) {
+    const f = (k) => {
+      const s = c.small(k);
+      return TX.lbpHistogram(grayPIL(s), s.w, s.h);
+    };
+    return { value: TX.chiSquare(f('a'), f('b')) };
+  },
+  zernike(c) {
+    const f = (k) => {
+      const s = CS.shrink(c[k].work, 128);
+      return TX.zernikeMoments(grayPIL(s), s.w, s.h);
+    };
+    const a = f('a');
+    const b = f('b');
+    if (!a || !b) return { verdict: 'na', display: 'n/a', note: 'One image is completely black, so it has no centre of brightness.' };
+    return { value: TX.euclidean(a, b) };
+  },
+  async huMoments(c) {
+    const cv = await loadOpenCV();
+    const mats = ['a', 'b'].map((k) => {
+      const s = c.small(k);
+      const m = new cv.Mat(s.h, s.w, cv.CV_8UC1);
+      m.data.set(grayPIL(s));
+      return m;
+    });
+    try {
+      return { value: cv.matchShapes(mats[0], mats[1], cv.CONTOURS_MATCH_I2, 0) };
+    } finally {
+      for (const m of mats) m.delete();
+    }
+  },
+  meanColor(c) {
+    const r = CS.meanColorDifference(c.small('a'), c.small('b'));
+    return { value: r.value, detail: { 'average A': labToHex(r.a), 'average B': labToHex(r.b) } };
+  },
 
   exif(c) {
     const ea = c.a.exif;
@@ -1066,6 +1246,7 @@ const RUN = {
     return { value };
   },
   async xfeat(c) {
+    if (TOO_SMALL(c)) return { verdict: 'na', display: 'too small', note: 'Keypoint detectors need images at least 32 pixels on each side.' };
     const r = await xfeatMatch(c);
     c.features.xfeat = r;
     const out = featureVerdict(c, r);
@@ -1349,6 +1530,38 @@ function summarizeExif(e) {
   return Object.keys(out).length ? out : null;
 }
 
+/**
+ * Does an image carry visual structure? 'flat' when it is (nearly) one colour,
+ * 'noise' when neighbouring pixels are unrelated (random noise), else 'normal'.
+ * Learned similarity scores are meaningless for the first two.
+ */
+function structureOf(img) {
+  if (img.w * img.h < 64) return 'flat';
+  const [w, h] = fitWithin(img.w, img.h, 256);
+  const r = resizeImg(img, w, h, 'box');
+  const Y = lumaFloat(r);
+  let mean = 0;
+  for (const v of Y) mean += v;
+  mean /= Y.length;
+  let varSum = 0;
+  let cov = 0;
+  let n = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const d = Y[y * w + x] - mean;
+      varSum += d * d;
+      if (x + 1 < w) {
+        cov += d * (Y[y * w + x + 1] - mean);
+        n++;
+      }
+    }
+  }
+  const sd = Math.sqrt(varSum / Y.length);
+  if (sd < 2.5) return 'flat';
+  const rho = cov / Math.max(1, n) / Math.max(1e-9, varSum / Y.length);
+  return rho < 0.3 ? 'noise' : 'normal';
+}
+
 async function scan({ scanId, a, b, disabled }) {
   currentScan = scanId;
   const t0 = performance.now();
@@ -1364,6 +1577,7 @@ async function scan({ scanId, a, b, disabled }) {
       exif: summarizeExif(img.exif),
       // Content Credentials are read on the page, with the C2PA SDK, only when present
       c2pa: !!img.prov?.info?.c2pa,
+      structure: structureOf(img.work),
     });
   }
   post({ type: 'info', scanId, info: c.info });
@@ -1385,7 +1599,8 @@ async function scan({ scanId, a, b, disabled }) {
       result = finalize(engine, await RUN[id](c));
     } catch (err) {
       console.error(id, err);
-      result = { verdict: 'error', display: 'error', note: String((err && err.message) || err) };
+      const message = typeof err === 'number' ? 'OpenCV could not process these images' : String((err && err.message) || err);
+      result = { verdict: 'error', display: 'error', note: message };
     }
     result.ms = Math.round(performance.now() - t);
     c.results[id] = result;

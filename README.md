@@ -2,7 +2,7 @@
 
 **Live site: <https://nathanreitinger.github.io/simsim/>**
 
-A VirusTotal-style scanner for image similarity. Drop two images and **48 tests** run side by side — from
+A VirusTotal-style scanner for image similarity. Drop two images and **79 tests** run side by side — from
 byte-level file hashes to Meta's **SSCD** copy detector — and the page reports how many of them flag the pair
 as similar, with an explanation of every test.
 
