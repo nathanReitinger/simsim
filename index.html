@@ -203,6 +203,10 @@
           <select class="case-pick" aria-label="Choose a copyright case"></select>
           <button type="button" class="btn small" id="runAllCases">Run all cases</button>
           <span class="muted small" id="runAllStatus"></span>
+          <div class="loader-bar run-all-bar" id="runAllBar" hidden>
+            <div class="loader-track" role="progressbar" aria-label="All cases" aria-valuemin="0" aria-valuemax="100"><i></i></div>
+            <span class="loader-pct" aria-hidden="true"></span>
+          </div>
         </div>
         <div class="case-table-box" id="caseTable" hidden></div>
         <div id="caseGroups"></div>

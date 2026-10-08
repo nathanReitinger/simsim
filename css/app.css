@@ -2879,8 +2879,8 @@ details.group[open] .group-head {
 
 /* ------------------------------------------------------------ working indicators */
 
-/* In the spirit of Claude Code's spinner: a morphing star (set by app.js), a
-   shimmering verb that changes, and on panels a scene that changes too. */
+/* In the spirit of Claude Code's spinner: a morphing star and a phrase that
+   changes (both set by app.js), the time so far and how much is done. */
 
 .loader {
   color: var(--muted);
@@ -2919,30 +2919,16 @@ details.group[open] .group-head {
     loader-in 0.35s ease-out;
 }
 
-.loader-time {
+.loader-time,
+.loader-pct {
   color: var(--faint);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
-.loader-panel {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 18px 12px 20px;
-  text-align: center;
-}
-
-.loader-panel .loader-line {
-  font-size: 14.5px;
-}
-
-.loader-note {
-  margin: 0;
-  max-width: 52ch;
-  font-size: 12.5px;
-  color: var(--faint);
+.loader-line .loader-pct {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 @keyframes loader-shimmer {
@@ -2961,6 +2947,61 @@ details.group[open] .group-head {
   }
 }
 
+/* progress: a slim bar and the percentage of the scan done */
+
+.loader-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(320px, 100%);
+}
+
+.loader-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.loader-track i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.3s linear;
+}
+
+.loader-bar .loader-pct {
+  min-width: 3.2em;
+  text-align: right;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* on the panels: centred, with a line about what will appear */
+
+.loader-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 26px 12px 28px;
+  text-align: center;
+}
+
+.loader-panel .loader-line {
+  font-size: 14.5px;
+}
+
+.loader-note {
+  margin: 0;
+  max-width: 52ch;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
 .scan-status {
   margin-bottom: 8px;
 }
@@ -2975,392 +3016,12 @@ details.group[open] .group-head {
   display: inline-block;
 }
 
-/* scenes: all four are drawn, the current one is shown */
-
-.loader-art {
-  position: relative;
-  width: 150px;
-  height: 64px;
-}
-
-.loader-art .scene {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  transition: opacity 0.6s ease;
-}
-
-.loader[data-scene='orbit'] .scene-orbit,
-.loader[data-scene='rocket'] .scene-rocket,
-.loader[data-scene='radar'] .scene-radar,
-.loader[data-scene='wave'] .scene-wave {
-  opacity: 1;
-}
-
-/* orbit: three dots circling a pulsing star */
-
-.scene-orbit .sun {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 10px;
-  height: 10px;
-  margin: -5px 0 0 -5px;
-  border-radius: 50%;
-  background: var(--spark);
-  box-shadow: 0 0 12px var(--spark);
-  animation: loader-pulse 1.6s ease-in-out infinite;
-}
-
-.scene-orbit .ring {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  border: 1px dashed var(--border-strong);
-  border-radius: 50%;
-  animation: spin linear infinite;
-}
-
-.scene-orbit .r1 {
-  width: 28px;
-  height: 28px;
-  margin: -14px 0 0 -14px;
-  animation-duration: 1.3s;
-}
-
-.scene-orbit .r2 {
-  width: 44px;
-  height: 44px;
-  margin: -22px 0 0 -22px;
-  animation-duration: 2.4s;
-  animation-direction: reverse;
-}
-
-.scene-orbit .r3 {
-  width: 60px;
-  height: 60px;
-  margin: -30px 0 0 -30px;
-  animation-duration: 3.8s;
-}
-
-.scene-orbit .ring b {
-  position: absolute;
-  left: 50%;
-  top: -4px;
-  width: 7px;
-  height: 7px;
-  margin-left: -3.5px;
-  border-radius: 50%;
-}
-
-.scene-orbit .r1 b {
-  background: var(--accent);
-}
-
-.scene-orbit .r2 b {
-  background: var(--partial);
-}
-
-.scene-orbit .r3 b {
-  background: var(--none);
-}
-
-@keyframes loader-pulse {
-  50% {
-    transform: scale(1.35);
-  }
-}
-
-/* rocket: a ship holding steady while the stars stream past */
-
-.scene-rocket {
-  overflow: hidden;
-  border-radius: 12px;
-}
-
-.scene-rocket .star {
-  position: absolute;
-  left: 0;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--faint);
-  animation: loader-warp linear infinite;
-}
-
-.scene-rocket .s1 {
-  top: 10%;
-  width: 10px;
-  animation-duration: 0.9s;
-}
-
-.scene-rocket .s2 {
-  top: 26%;
-  width: 4px;
-  animation-duration: 1.7s;
-  animation-delay: -0.6s;
-}
-
-.scene-rocket .s3 {
-  top: 44%;
-  width: 14px;
-  animation-duration: 0.7s;
-  animation-delay: -0.3s;
-}
-
-.scene-rocket .s4 {
-  top: 62%;
-  width: 6px;
-  animation-duration: 1.3s;
-  animation-delay: -1s;
-}
-
-.scene-rocket .s5 {
-  top: 80%;
-  width: 10px;
-  animation-duration: 1s;
-  animation-delay: -0.5s;
-}
-
-.scene-rocket .s6 {
-  top: 92%;
-  width: 3px;
-  animation-duration: 2s;
-  animation-delay: -1.4s;
-}
-
-@keyframes loader-warp {
-  from {
-    transform: translateX(160px);
-  }
-  to {
-    transform: translateX(-20px);
-  }
-}
-
-.scene-rocket .ship {
-  position: absolute;
-  left: 52px;
-  top: 50%;
-  width: 44px;
-  height: 26px;
-  margin-top: -13px;
-  animation: loader-bob 1.4s ease-in-out infinite;
-}
-
-.scene-rocket .ship svg {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-.scene-rocket .hull {
-  fill: var(--surface);
-  stroke: var(--accent);
-  stroke-width: 1.8;
-}
-
-.scene-rocket .fin,
-.scene-rocket .window {
-  fill: var(--accent);
-}
-
-.scene-rocket .flame {
-  position: absolute;
-  left: -11px;
-  top: 50%;
-  width: 18px;
-  height: 9px;
-  margin-top: -4.5px;
-  border-radius: 50%;
-  background: radial-gradient(ellipse at 100% 50%, var(--partial), var(--match) 55%, transparent 72%);
-  transform-origin: 100% 50%;
-  animation: loader-flicker 0.12s ease-in-out infinite alternate;
-}
-
-@keyframes loader-bob {
-  50% {
-    transform: translateY(-5px) rotate(-4deg);
-  }
-}
-
-@keyframes loader-flicker {
-  from {
-    transform: scaleX(0.65);
-    opacity: 0.75;
-  }
-  to {
-    transform: scaleX(1.2);
-    opacity: 1;
-  }
-}
-
-/* radar: a sweep that lights up blips as it passes them */
-
-.scene-radar .dish,
-.scene-radar .sweep {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 60px;
-  height: 60px;
-  margin: -30px 0 0 -30px;
-  border-radius: 50%;
-}
-
-.scene-radar .dish {
-  border: 1px solid var(--border-strong);
-  background:
-    radial-gradient(circle, var(--border-strong) 0 1.5px, transparent 2px),
-    radial-gradient(circle, transparent 0 14px, var(--border) 14.5px 15.5px, transparent 16px);
-}
-
-.scene-radar .sweep {
-  background: conic-gradient(from 0deg, transparent 0 270deg, color-mix(in srgb, var(--accent) 60%, transparent) 360deg);
-  animation: spin 2s linear infinite;
-}
-
-.scene-radar .blip {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  opacity: 0;
-  animation: loader-blip 2s linear infinite;
-}
-
-/* each blip lights when the sweep reaches its angle (60°, 200°, 305°) */
-.scene-radar .b1 {
-  left: 87px;
-  top: 20px;
-  background: var(--match);
-  animation-delay: 0.33s;
-}
-
-.scene-radar .b2 {
-  left: 65px;
-  top: 49px;
-  background: var(--partial);
-  animation-delay: 1.11s;
-}
-
-.scene-radar .b3 {
-  left: 62px;
-  top: 22px;
-  background: var(--none);
-  animation-delay: 1.69s;
-}
-
-@keyframes loader-blip {
-  0% {
-    opacity: 1;
-    transform: scale(1.4);
-  }
-  40% {
-    opacity: 0.25;
-    transform: scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: scale(0.8);
-  }
-}
-
-/* wave: the verdict colours, bouncing */
-
-.scene-wave {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
-.scene-wave i {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  animation: loader-wave 1.2s ease-in-out infinite;
-}
-
-.scene-wave i:nth-child(1) {
-  background: var(--identical);
-}
-
-.scene-wave i:nth-child(2) {
-  background: var(--match);
-  animation-delay: 0.1s;
-}
-
-.scene-wave i:nth-child(3) {
-  background: var(--partial);
-  animation-delay: 0.2s;
-}
-
-.scene-wave i:nth-child(4) {
-  background: var(--none);
-  animation-delay: 0.3s;
-}
-
-.scene-wave i:nth-child(5) {
-  background: var(--accent);
-  animation-delay: 0.4s;
-}
-
-@keyframes loader-wave {
-  0%,
-  60%,
-  100% {
-    transform: translateY(0) scale(1);
-  }
-  30% {
-    transform: translateY(-16px) scale(1.2);
-  }
-}
-
-/* the spectrum's rungs while the scan decides */
-
-.spectrum-steps.pending li {
-  animation: loader-rung 2.8s ease-in-out infinite;
-}
-
-.spectrum-steps.pending li:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.spectrum-steps.pending li:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-.spectrum-steps.pending li:nth-child(4) {
-  animation-delay: 0.6s;
-}
-
-.spectrum-steps.pending li:nth-child(5) {
-  animation-delay: 0.8s;
-}
-
-.spectrum-steps.pending li:nth-child(6) {
-  animation-delay: 1s;
-}
-
-.spectrum-steps.pending li:nth-child(7) {
-  animation-delay: 1.2s;
-}
-
-@keyframes loader-rung {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-  50% {
-    opacity: 1;
-    border-color: var(--accent);
-    color: var(--text);
-  }
-}
-
 .spectrum .loader {
   margin-top: 10px;
+}
+
+.case-table .loader-bar {
+  margin-top: 6px;
 }
 
 /* the all-cases table: the case being scanned, and those still to come */
@@ -3382,13 +3043,19 @@ details.group[open] .group-head {
   opacity: 0.5;
 }
 
+.run-all-bar {
+  width: min(260px, 100%);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .loader *,
-  .spectrum-steps.pending li {
-    animation: none !important;
+  .loader-verb,
+  .loader-verb.loader-swap {
+    animation: none;
+    color: var(--muted);
+    background: none;
   }
 
-  .loader-art .scene {
+  .loader-track i {
     transition: none;
   }
 }

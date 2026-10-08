@@ -76,6 +76,8 @@ const state = {
   scanId: 0,
   scanning: false,
   scanT0: 0, // when the current scan started (performance.now)
+  runningAt: 0, // when the test running now started
+  lastResultAt: 0, // when the latest test finished
   results: {},
   info: null,
   visuals: null,
@@ -107,90 +109,211 @@ const isDisabled = (key) => state.settings.disabled.includes(key);
 // ------------------------------------------------------------------ working indicators
 
 // In the spirit of Claude Code's spinner: a star that morphs through
-// · ✢ ✳ ✶ ✻ ✽ and back, a shimmering verb that changes while you wait and,
-// on the larger panels, a little scene that changes every few seconds —
-// orbiting dots, a rocket in a starfield, a radar sweep, a wave in the
-// verdict colours. One timer drives every indicator on the page and stops
-// when none are left.
+// · ✢ ✳ ✶ ✻ ✽ and back, a shimmering phrase that changes every couple of
+// seconds, the time so far and, for a scan, how much of it is done. One
+// timer drives every indicator on the page and stops when none are left.
 
 const GLYPHS = ['·', '✢', '✳︎', '✶', '✻', '✽', '✻', '✶', '✳︎', '✢'];
-const SCENES = ['orbit', 'rocket', 'radar', 'wave'];
-const VERBS = {
-  visuals: [
-    'Lining up A and B',
-    'Matching keypoints',
-    'Warping B onto A',
-    'Hunting for shared patches',
-    'Painting the heat map',
-    'Circling what changed',
-    'Drawing the arrows',
-    'Squinting at the edges',
-  ],
-  objects: ['Looking for objects', 'Drawing boxes', 'Pairing objects up', 'Comparing them one by one', 'Counting hats and cameras'],
-  spectrum: ['Tallying the tests', 'Weighing the scores', 'Finding the right rung'],
-  generic: ['Percolating', 'Cross-examining pixels', 'Comparing notes', 'Reticulating splines', 'Leaving fair use to the courts'],
+
+// Asides that keep the site's point in view, mixed into every list of phrases.
+const ASIDES = [
+  'Measuring pixels, not originality',
+  'Not deciding fair use',
+  'Comparing bytes, not expression',
+  'Leaving substantial similarity to the courts',
+  'Ideas are free; checking the pixels',
+  'Similar is not the same as infringing',
+  'Cross-examining pixels',
+  'Asking 101 tests, not a judge',
+];
+/** A list of phrases with one of the asides after every three. */
+const withAsides = (list, offset) => list.flatMap((p, i) => (i % 3 === 2 ? [p, ASIDES[(offset + Math.floor(i / 3)) % ASIDES.length]] : [p]));
+const PHRASES = {
+  visuals: withAsides(
+    [
+      'Lining up A and B',
+      'Matching ORB keypoints',
+      'Matching AKAZE keypoints',
+      'Fitting a homography',
+      'Warping B onto A',
+      'Undoing the crop',
+      'Checking for a mirror image',
+      'Hunting for shared patches',
+      'Pairing up DINOv2 patches',
+      'Painting the heat map',
+      'Measuring colour shifts (ΔE)',
+      'Mapping SSIM patch by patch',
+      'Circling what changed',
+      'Numbering the differences',
+      'Drawing the arrows',
+      'Tracing the edges',
+      'Outlining the region they share',
+      'Squinting at the details',
+    ],
+    0,
+  ),
+  objects: withAsides(
+    [
+      'Looking for objects',
+      'Drawing boxes',
+      'Naming what is in each picture',
+      'Pairing objects up',
+      'Comparing them one by one',
+      'Matching hats with hats',
+      'Counting people, pictures and chairs',
+      'Finding what only A has',
+      'Finding what only B has',
+      'Checking poses joint by joint',
+    ],
+    3,
+  ),
+  spectrum: withAsides(
+    [
+      'Tallying the tests',
+      'Weighing the scores',
+      'Same file? Same pixels?',
+      'Re-saved, or edited?',
+      'Shared part, or similar subject?',
+      'Asking the copy detectors',
+      'Finding the right rung',
+    ],
+    5,
+  ),
+  generic: ASIDES,
 };
-const SCENE_ART = `
-<div class="scene scene-orbit"><i class="sun"></i><i class="ring r1"><b></b></i><i class="ring r2"><b></b></i><i class="ring r3"><b></b></i></div>
-<div class="scene scene-rocket"><i class="star s1"></i><i class="star s2"></i><i class="star s3"></i><i class="star s4"></i><i class="star s5"></i><i class="star s6"></i><i class="ship"><i class="flame"></i><svg viewBox="0 0 40 24"><path class="fin" d="M11 7.5 6 2l9 4zm0 9L6 22l9-4z"/><path class="hull" d="M6 12c4-7 18-9 30 0-12 9-26 7-30 0z"/><circle class="window" cx="24" cy="12" r="3"/></svg></i></div>
-<div class="scene scene-radar"><i class="dish"></i><i class="sweep"></i><i class="blip b1"></i><i class="blip b2"></i><i class="blip b3"></i></div>
-<div class="scene scene-wave"><i></i><i></i><i></i><i></i><i></i></div>`;
+
+// Typical time per test (ms, median over five copyright cases on a laptop),
+// so the progress bar moves with time rather than with the count of tests:
+// the object detector and the neural models take most of a scan.
+const EXPECTED_MS = {
+  objects: 5700,
+  dino: 3600,
+  pose: 1900,
+  sscd: 1100,
+  sscdLarge: 1000,
+  sscdAligned: 1000,
+  dreamsim: 750,
+  clip: 720,
+  gist: 630,
+  xfeat: 620,
+  kaze: 580,
+  fsim: 490,
+  gabor: 300,
+  brisk: 220,
+  akaze: 200,
+  whashDb4: 190,
+  vsi: 170,
+  orb: 150,
+  ssim: 130,
+  lpips: 130,
+  cropResistant: 120,
+  vif: 100,
+};
+const OTHER_MS = 20; // each of the other tests (median 10 ms, mean 21 ms)
+const TAIL_MS = 1100; // reading the files, and marking up the views after the last test
+
+/** How much of the current scan is done, 0–1, from the typical time of each test. */
+function scanProgress() {
+  if (!state.scanning) return 1;
+  const now = performance.now();
+  let total = TAIL_MS;
+  let done = 0;
+  let waiting = false;
+  for (const e of ENGINES) {
+    if (e.model && isDisabled(e.model)) continue;
+    const w = EXPECTED_MS[e.id] ?? OTHER_MS;
+    total += w;
+    const r = state.results[e.id];
+    if (r && r.verdict !== 'running') {
+      done += w;
+    } else {
+      waiting = true;
+      // the test running now earns credit for its time so far, up to 90 %
+      if (r) done += w * Math.min(0.9, (now - state.runningAt) / w);
+    }
+  }
+  if (!waiting) done += TAIL_MS * Math.min(0.9, (now - state.lastResultAt) / TAIL_MS);
+  return Math.min(0.99, done / total);
+}
+
 const stillMotion = matchMedia('(prefers-reduced-motion: reduce)');
 let loaderTimer = null;
 
+/** A slim progress bar with its percentage; fill it with setBar. */
+function progressBar(label) {
+  return el(
+    'div',
+    { class: 'loader-bar' },
+    el('div', { class: 'loader-track', role: 'progressbar', 'aria-label': label, 'aria-valuemin': '0', 'aria-valuemax': '100' }, el('i')),
+    el('span', { class: 'loader-pct', 'aria-hidden': 'true' }),
+  );
+}
+
+function setBar(bar, fraction) {
+  const percent = Math.floor(fraction * 100);
+  const track = $('.loader-track', bar);
+  track.firstElementChild.style.width = `${percent}%`;
+  track.setAttribute('aria-valuenow', String(percent));
+  $('.loader-pct', bar).textContent = `${percent}%`;
+}
+
 /**
- * A "working…" indicator. `kind` picks the verbs it cycles through, or pass
- * `text` for a fixed label (relabel it with setLoaderText). `art` adds the
- * animated scene, `note` a line of explanation, and `t0` the moment the work
- * began, so a re-rendered indicator keeps counting where it left off.
- * `quiet` leaves it out of the accessibility tree when the row already says
- * what is running.
+ * A "working…" indicator: the morphing star and a phrase. `kind` picks the
+ * phrases it cycles through, or pass `text` for a fixed label (relabel it
+ * with setLoaderText). `pct` adds the percentage of the scan done, `bar` a
+ * progress bar with it, `panel` centres it with a `note` underneath, and `t0`
+ * is when the work began, so a re-rendered indicator keeps counting. `quiet`
+ * leaves it out of the accessibility tree where the row already says what is
+ * running.
  */
-function loader(kind, { text = null, art = false, note = null, time = true, t0 = performance.now(), label = 'Working', quiet = false } = {}) {
-  const seed = Math.floor(Math.random() * 997);
+function loader(kind, { text = null, pct = false, bar = false, panel = false, note = null, time = true, t0 = performance.now(), label = 'Working', quiet = false } = {}) {
   const node = el(
     'div',
     {
-      class: art ? 'loader loader-panel' : 'loader',
+      class: panel ? 'loader loader-panel' : 'loader',
       role: quiet ? null : 'status',
       'aria-label': quiet ? null : label,
       'aria-hidden': quiet ? 'true' : null,
-      dataset: { kind, seed, t0, fixed: text === null ? '' : '1' },
+      dataset: { kind, seed: Math.floor(Math.random() * 997), t0, fixed: text === null ? '' : '1' },
     },
-    art ? el('div', { class: 'loader-art', 'aria-hidden': 'true', html: SCENE_ART }) : null,
     el(
       'div',
       { class: 'loader-line', 'aria-hidden': 'true' },
       el('span', { class: 'loader-glyph' }),
       el('span', { class: 'loader-verb' }, text ?? ''),
       time ? el('span', { class: 'loader-time' }) : null,
+      pct ? el('span', { class: 'loader-pct' }) : null,
     ),
+    bar ? progressBar('Scan progress') : null,
     note ? el('p', { class: 'loader-note' }, note) : null,
   );
-  tickLoader(node, performance.now());
+  tickLoader(node, performance.now(), scanProgress());
   loaderTimer ??= setInterval(tickLoaders, 120);
   return node;
 }
 
-function tickLoader(n, now) {
+function tickLoader(n, now, progress) {
   const t = Math.max(0, now - Number(n.dataset.t0));
-  const seed = Number(n.dataset.seed);
   $('.loader-glyph', n).textContent = stillMotion.matches ? '✻' : GLYPHS[Math.floor(t / 120) % GLYPHS.length];
   if (!n.dataset.fixed) {
-    const words = VERBS[n.dataset.kind] || VERBS.generic;
-    const k = Math.floor(t / 2400);
+    const words = PHRASES[n.dataset.kind] || PHRASES.generic;
+    const k = Math.floor(t / 2200);
     if (n.dataset.k !== String(k)) {
       n.dataset.k = k;
       const verb = $('.loader-verb', n);
-      verb.textContent = `${words[(seed + k) % words.length]}…`;
+      const phrase = words[(Number(n.dataset.seed) + k) % words.length];
+      verb.textContent = phrase.endsWith('?') ? phrase : `${phrase}…`;
       verb.classList.remove('loader-swap');
       void verb.offsetWidth; // restart the fade-in
       verb.classList.add('loader-swap');
     }
   }
-  if (n.classList.contains('loader-panel')) n.dataset.scene = SCENES[(seed + Math.floor(t / 7200)) % SCENES.length];
   const time = $('.loader-time', n);
   if (time) time.textContent = t >= 1000 ? `${Math.floor(t / 1000)}s` : '';
+  const pct = $('.loader-line .loader-pct', n);
+  if (pct) pct.textContent = `${Math.floor(progress * 100)}%`;
+  const bar = $('.loader-bar', n);
+  if (bar) setBar(bar, progress);
 }
 
 function tickLoaders() {
@@ -201,7 +324,11 @@ function tickLoaders() {
     return;
   }
   const now = performance.now();
-  for (const n of nodes) tickLoader(n, now);
+  const progress = scanProgress();
+  for (const n of nodes) tickLoader(n, now, progress);
+  if (state.scanning) $('#progressBar').style.width = `${Math.floor(progress * 100)}%`;
+  const b = state.batch;
+  if (b) setBar($('#runAllBar'), (b.rows.length + (state.scanning ? progress : 0)) / b.queue.length);
 }
 
 /** Relabel fixed-text indicators, e.g. with the test that is running now. */
@@ -305,12 +432,14 @@ function onWorkerMessage(e) {
       checkCredentials(m.scanId, m.info);
       break;
     case 'running':
+      state.runningAt = performance.now();
       state.results[m.id] = { verdict: 'running' };
       renderEngine(m.id);
       updateSpotlight(m.id);
       setLoaderText('.loader[data-kind="scan"]', `${ENGINE_BY_ID[m.id]?.name || m.id}…`);
       break;
     case 'result':
+      state.lastResultAt = performance.now();
       state.results[m.id] = m.result;
       renderEngine(m.id);
       updateSpotlight(m.id);
@@ -572,10 +701,12 @@ async function startScan() {
   state.visuals = null;
   state.scanning = true;
   state.scanT0 = performance.now();
+  state.runningAt = state.scanT0;
+  state.lastResultAt = state.scanT0;
   state.openEngines.clear();
   $('#results').hidden = false;
   const status = $('#scanStatus');
-  status.replaceChildren(loader('scan', { text: 'Reading the files…', t0: state.scanT0, label: 'Scanning the images' }));
+  status.replaceChildren(loader('scan', { text: 'Reading the files…', pct: true, t0: state.scanT0, label: 'Scanning the images' }));
   status.hidden = false;
   delete $('#spectrum').dataset.pending;
   const s = $('.summary');
@@ -1119,8 +1250,7 @@ function updateSummary() {
   partCircle.style.strokeDashoffset = `${-fFlag * C}`;
 
   const n = ENGINES.length;
-  const pct = Math.round((finished.length / n) * 100);
-  $('#progressBar').style.width = `${pct}%`;
+  $('#progressBar').style.width = `${Math.floor(scanProgress() * 100)}%`;
   const summary = $('.summary');
   if (state.scanning) {
     $('#summaryKicker').textContent = `Scanning… ${finished.length} of ${n} tests`;
@@ -2066,7 +2196,8 @@ function renderWhereCard() {
     box.append(
       state.scanning
         ? loader('visuals', {
-            art: true,
+            panel: true,
+            bar: true,
             t0: state.scanT0,
             label: 'Preparing the marked-up views',
             note: 'Marked-up views of where the similarity comes from appear here when the scan finishes.',
@@ -2143,7 +2274,8 @@ function renderVisual() {
     if (!v && state.scanning) {
       viewer.append(
         loader('visuals', {
-          art: true,
+          panel: true,
+          bar: true,
           t0: state.scanT0,
           label: 'Preparing more views',
           note: 'Keypoint matches, heat maps and marked-up differences appear here when the scan finishes.',
@@ -2389,7 +2521,8 @@ function renderObjects() {
     if (state.scanning && !isDisabled('dfine') && r?.verdict !== 'skipped' && r?.verdict !== 'error') {
       panel.append(
         loader('objects', {
-          art: true,
+          panel: true,
+          bar: true,
           t0: state.scanT0,
           label: 'Detecting objects',
           note: 'Objects are detected near the end of the scan; they appear here, paired up and compared, when it finishes.',
@@ -2962,6 +3095,9 @@ async function runAllCases() {
   const ready = CASES.filter((c) => state.caseImages[c.id]);
   state.batch = { stop: false, rows: [], queue: ready, current: null, t0: 0 };
   btn.textContent = 'Stop';
+  const bar = $('#runAllBar');
+  setBar(bar, 0);
+  bar.hidden = false;
   for (const [i, c] of ready.entries()) {
     if (state.batch.stop) break;
     status.textContent = `Scanning ${i + 1} of ${ready.length}: ${c.name}…`;
@@ -2979,6 +3115,7 @@ async function runAllCases() {
   const n = state.batch.rows.length;
   state.lastBatch = state.batch.rows;
   state.batch = null;
+  bar.hidden = true;
   renderCaseTable();
   btn.textContent = 'Run all cases again';
   status.textContent = n ? `Finished ${n} case${n === 1 ? '' : 's'}. Click a row to see its full results.` : '';
@@ -3050,7 +3187,7 @@ function renderCaseTable() {
                 'td',
                 { colspan: '6' },
                 now
-                  ? loader('scan', { text: 'Fetching the works…', t0: batch.t0, label: `Scanning ${c.name}` })
+                  ? loader('scan', { text: 'Fetching the works…', bar: true, t0: batch.t0, label: `Scanning ${c.name}` })
                   : el('span', { class: 'muted small' }, 'Waiting…'),
               ),
             );
