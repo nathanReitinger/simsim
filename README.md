@@ -84,6 +84,26 @@ Every view comes with a “what you’re seeing / what it means for copying” n
 each pair on a **similarity spectrum** — same file → same pixels → re-saved → edited copy → shared part →
 similar subject → unrelated — and the How it works section explains the seven levels and which tests detect them.
 
+## Copyright cases
+
+Twelve cases from the course, each with the plaintiff’s work (A) and the defendant’s (B) and the court’s
+holding — infringement, fair use, or no infringement, with mixed or unfinished results (Cariou v. Prince,
+Sedlik v. Kat Von D) marked as such:
+
+- **Infringement:** Rogers v. Koons · Steinberg v. Columbia Pictures · Friedman v. Guetta · Brammer v. Violent
+  Hues · Dr. Seuss v. ComicMix · Andy Warhol Foundation v. Goldsmith
+- **Fair use:** Leibovitz v. Paramount · Blanch v. Koons · Cariou v. Prince (25 of 30 works; the one shown was
+  remanded, then settled)
+- **No infringement:** Harney v. Sony · Rentmeester v. Nike · Sedlik v. Kat Von D (jury verdict; rehearing en
+  banc pending)
+
+Pick a case from the drop-down to scan its pair, or press **Run all cases** to scan every pair in turn and fill a
+table of the scanner’s verdict, similarity level, tests flagged, SSCD, DINOv2 shared parts and DreamSim beside
+the court’s holding. The table makes the course’s point concrete: high similarity is evidence of copying, but
+liability also turns on what was protectable, how much was taken and fair use. Images for the Warhol, Seuss,
+Rentmeester, Brammer and Blanch cases are taken from the published opinions; to add cases, see
+[`assets/cases/README.md`](assets/cases/README.md).
+
 ## Other features
 
 A spotlight panel with SSCD on its published threshold scale (CLIP alongside for contrast),

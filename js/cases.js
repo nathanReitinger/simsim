@@ -1,6 +1,8 @@
 // Copyright cases where the works are images (from the course's case table).
 // Image A is the plaintiff's work, image B the defendant's. Which cases have
 // images is listed in assets/cases/manifest.json (see assets/cases/README.md).
+// A case's group gives its holding; `outcome` / `holding` override the group's
+// wording where the result is mixed or not final.
 
 export const CASE_GROUPS = [
   { id: 'liable', title: 'Liability', blurb: 'Infringement found; fair use rejected.' },
@@ -134,6 +136,17 @@ export const CASES = [
     note: 'Same artist, opposite result from Rogers.',
   },
   {
+    id: 'cariou-v-prince',
+    group: 'fairuse',
+    name: 'Cariou v. Prince',
+    cite: '714 F.3d 694 (2d Cir. 2013)',
+    pairing: 'Yes Rasta photographs → Canal Zone paintings',
+    note: '25 of Prince’s 30 works held fair use as a matter of law. Graduation, shown here, was one of five sent back for trial; the case settled in 2014.',
+    outcome: 'Mostly fair use',
+    holding: 'Holding: 25 of 30 works fair use; this one undecided (settled)',
+    final: false,
+  },
+  {
     id: 'perfect10-v-amazon',
     group: 'fairuse',
     name: 'Perfect 10 v. Amazon.com',
@@ -208,5 +221,16 @@ export const CASES = [
     cite: '449 F. Supp. 3d 333 (S.D.N.Y. 2020)',
     pairing: 'Tattoo designs → NBA 2K',
     note: 'De minimis, implied license, fair use.',
+  },
+  {
+    id: 'sedlik-v-kat-von-d',
+    group: 'nosim',
+    name: 'Sedlik v. Von Drachenberg (Kat Von D)',
+    cite: 'No. 2:21-cv-01102 (C.D. Cal. 2024), 9th Cir. No. 24-3367',
+    pairing: 'Miles Davis portrait → tattoo',
+    note: 'The jury found the tattoo not substantially similar (2024) and a Ninth Circuit panel affirmed (January 2026), but in June 2026 the full court granted rehearing en banc and vacated the panel’s opinion.',
+    outcome: 'No infringement (not final)',
+    holding: 'Holding: no infringement so far (jury, 2024); rehearing en banc pending',
+    final: false,
   },
 ];

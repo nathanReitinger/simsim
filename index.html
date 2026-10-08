@@ -99,7 +99,8 @@
         </div>
         <p class="cases-pointer" hidden>
           Or compare the works from a real copyright case:
-          <a href="#cases" id="casesLink">image cases ↓</a>
+          <select class="case-pick" aria-label="Choose a copyright case"></select>
+          <a href="#cases" id="casesLink">all cases ↓</a>
         </p>
         <p class="download-note" id="downloadNote" hidden></p>
       </section>
@@ -184,6 +185,12 @@
           Compare a pair to see whether the similarity tests line up with what the court decided — and why they often
           do not.
         </p>
+        <div class="case-tools">
+          <select class="case-pick" aria-label="Choose a copyright case"></select>
+          <button type="button" class="btn small" id="runAllCases">Run all cases</button>
+          <span class="muted small" id="runAllStatus"></span>
+        </div>
+        <div class="case-table-box" id="caseTable" hidden></div>
         <div id="caseGroups"></div>
       </section>
 

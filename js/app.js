@@ -94,6 +94,9 @@ const state = {
   objectHighlight: null,
   case: null, // copyright case whose works are loaded in A and B
   caseImages: {}, // case id -> image paths, from assets/cases/manifest.json
+  scanWaiters: [], // callbacks for the end of the current scan
+  batch: null, // the all-cases run in progress
+  lastBatch: null, // rows of the last all-cases run
   openEngines: new Set(),
   warmed: false,
 };
@@ -208,6 +211,7 @@ function onWorkerMessage(e) {
       state.elapsed = m.ms;
       updateSummary();
       updateButtons();
+      settleScanWaiters();
       break;
     case 'fatal':
       fail(m.message);
@@ -254,6 +258,7 @@ async function checkCredentials(scanId, info) {
 
 function fail(message) {
   state.scanning = false;
+  settleScanWaiters();
   const s = $('.summary');
   s.dataset.tone = 'error';
   $('#summaryKicker').textContent = 'Scan failed';
@@ -451,7 +456,7 @@ async function startScan() {
   renderDetails();
   updateSummary();
   updateButtons();
-  requestAnimationFrame(() => $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  if (!state.batch) requestAnimationFrame(() => $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' }));
   prefetchModels();
 
   const [bmA, bmB, bytesA, bytesB] = await Promise.all([
@@ -881,6 +886,10 @@ function similarityLevel(R, V) {
   if (is('pdqDihedral', 'match')) return { id: 'edited', why: 'PDQ matches once B is rotated or mirrored' };
   if (is('crop', 'identical', 'match')) return { id: 'part', why: 'one image appears inside the other' };
   if (sscd !== null && sscd >= 0.5) return { id: 'part', why: `SSCD scores ${sscd.toFixed(2)}, the range Somepalli et al. associate with partial copies` };
+  // as in the headline: alignment never lifted an unrelated benchmark pair to 0.5
+  if (aligned !== null && aligned >= 0.5 && (sscd === null || aligned > sscd + 0.05)) {
+    return { id: 'part', why: `once B is lined up with A, SSCD scores ${aligned.toFixed(2)} on the region they share, the range Somepalli et al. associate with partial copies` };
+  }
   const kp = ['orb', 'akaze', 'brisk'].filter((id) => is(id, 'match'));
   if (kp.length) return { id: 'part', why: `${kp.map((k) => k.toUpperCase()).join(', ')} keypoints match in one consistent geometry` };
   const dino = val('dino');
@@ -2668,10 +2677,13 @@ async function loadSample(s) {
 // ------------------------------------------------------------------ copyright cases
 
 const OUTCOME = {
-  liable: { short: 'Infringement', long: 'Court: infringement' },
-  fairuse: { short: 'Fair use', long: 'Court: fair use' },
-  nosim: { short: 'No infringement', long: 'Court: no infringement' },
+  liable: { short: 'Infringement', long: 'Holding: infringement' },
+  fairuse: { short: 'Fair use', long: 'Holding: no infringement (fair use)' },
+  nosim: { short: 'No infringement', long: 'Holding: no infringement' },
 };
+// a case may word its own holding when the result is mixed or not final
+const outcomeShort = (c) => c.outcome || OUTCOME[c.group].short;
+const outcomeLong = (c) => c.holding || OUTCOME[c.group].long;
 
 const caseImageUrl = (path) => new URL(`assets/cases/${path}`, ROOT).href;
 
@@ -2711,7 +2723,143 @@ function renderCases() {
   $('.cases-pointer').hidden = !ready.length;
   for (const a of document.querySelectorAll('.topbar a[href="#cases"]')) a.hidden = !ready.length;
   const link = $('#casesLink');
-  link.replaceChildren(...(ready.length === 1 ? [el('i', {}, ready[0].name), ' ↓'] : [`${ready.length} image cases ↓`]));
+  link.replaceChildren(...(ready.length === 1 ? [el('i', {}, ready[0].name), ' ↓'] : [`all ${ready.length} cases ↓`]));
+  for (const pick of document.querySelectorAll('.case-pick')) fillCasePicker(pick, ready);
+}
+
+/** A drop-down of the cases with images, grouped by holding. */
+function fillCasePicker(select, ready) {
+  select.replaceChildren(el('option', { value: '' }, 'Choose a case…'));
+  for (const g of CASE_GROUPS) {
+    const cases = ready.filter((c) => c.group === g.id);
+    if (!cases.length) continue;
+    select.append(el('optgroup', { label: g.title }, cases.map((c) => el('option', { value: c.id }, `${c.name} — ${outcomeShort(c)}`))));
+  }
+  select.value = state.case?.id || '';
+}
+
+function pickCase(id) {
+  const c = CASES.find((x) => x.id === id);
+  if (c) loadCase(c);
+}
+
+// ------------------------------------------------------------------ all cases at once
+
+/** Resolves when the current scan finishes (or fails). */
+function scanFinished() {
+  return new Promise((resolve) => state.scanWaiters.push(resolve));
+}
+
+function settleScanWaiters() {
+  const waiters = state.scanWaiters.splice(0);
+  for (const w of waiters) w();
+}
+
+const levelLabel = (id) => LEVELS.find((l) => l.id === id)?.label || '—';
+
+/** One row of the all-cases table, from the finished scan on the page. */
+function caseRow(c) {
+  const R = state.results;
+  const counted = Object.values(R).filter((r) => COUNTED.has(r.verdict));
+  const num = (id) => (typeof R[id]?.value === 'number' && COUNTED.has(R[id].verdict) ? R[id] : null);
+  const h = headline(R);
+  return {
+    c,
+    title: h.title,
+    tone: h.tone,
+    level: similarityLevel(R, state.visuals),
+    flagged: counted.filter((r) => FLAGGED.has(r.verdict)).length,
+    total: counted.length,
+    sscd: num('sscd'),
+    dino: num('dinoParts'),
+    dreamsim: num('dreamsim'),
+  };
+}
+
+async function runAllCases() {
+  const btn = $('#runAllCases');
+  const status = $('#runAllStatus');
+  if (state.batch) {
+    state.batch.stop = true;
+    status.textContent = 'Stopping after this case…';
+    return;
+  }
+  const ready = CASES.filter((c) => state.caseImages[c.id]);
+  state.batch = { stop: false, rows: [] };
+  btn.textContent = 'Stop';
+  renderCaseTable();
+  for (const [i, c] of ready.entries()) {
+    if (state.batch.stop) break;
+    status.textContent = `Scanning ${i + 1} of ${ready.length}: ${c.name}…`;
+    const done = scanFinished();
+    if (!(await loadCase(c))) {
+      settleScanWaiters();
+      continue;
+    }
+    await done;
+    state.batch.rows.push(caseRow(c));
+    renderCaseTable();
+  }
+  const n = state.batch.rows.length;
+  state.lastBatch = state.batch.rows;
+  state.batch = null;
+  btn.textContent = 'Run all cases again';
+  status.textContent = n ? `Finished ${n} case${n === 1 ? '' : 's'}. Click a row to see its full results.` : '';
+}
+
+function renderCaseTable() {
+  const box = $('#caseTable');
+  const rows = state.batch?.rows || state.lastBatch || [];
+  box.hidden = !state.batch && !rows.length;
+  if (box.hidden) return;
+  const fmt = (r, f) => (r ? f(r.value) : '—');
+  // infringement or not; the line under it names fair use or explains a mixed, unfinished result
+  const court = (c) => {
+    const detail = c.holding ? c.holding.replace(/^Holding: /, '') : c.group === 'fairuse' ? 'fair use' : null;
+    return [
+      el('span', { class: 'case-outcome', 'data-group': c.group, 'data-final': String(c.final !== false) }, c.final === false ? outcomeShort(c) : c.group === 'liable' ? 'Infringement' : 'No infringement'),
+      detail ? el('div', { class: 'muted small' }, detail) : null,
+    ];
+  };
+  box.replaceChildren(
+    el('h3', {}, 'All cases at a glance'),
+    el(
+      'p',
+      { class: 'muted small' },
+      'Each pair scanned in turn with every test. Compare what the scanner measures with what the court held: similarity is evidence of copying, but infringement also turns on what was protectable, how much was taken and fair use.',
+    ),
+    el(
+      'div',
+      { class: 'case-table-wrap' },
+      el(
+        'table',
+        { class: 'case-table' },
+        el(
+          'thead',
+          {},
+          el('tr', {}, ['Case', 'Court', 'Scanner’s verdict', 'Similarity level', 'Tests flagged', 'SSCD copy score', 'DINOv2 shared parts', 'DreamSim distance'].map((t) => el('th', {}, t))),
+        ),
+        el(
+          'tbody',
+          {},
+          rows.map((r) =>
+            el(
+              'tr',
+              { tabindex: '0', title: 'Show this case’s full results', onclick: () => loadCase(r.c), onkeydown: (e) => e.key === 'Enter' && loadCase(r.c) },
+              el('td', {}, el('i', {}, r.c.name), el('div', { class: 'muted small' }, r.c.cite)),
+              el('td', {}, court(r.c)),
+              el('td', { 'data-tone': r.tone }, r.title),
+              el('td', {}, levelLabel(r.level?.id)),
+              el('td', { class: 'num' }, `${r.flagged} / ${r.total}`),
+              el('td', { class: 'num' }, fmt(r.sscd, (v) => v.toFixed(3))),
+              el('td', { class: 'num' }, fmt(r.dino, (v) => `${Math.round(v * 100)}%`)),
+              el('td', { class: 'num' }, fmt(r.dreamsim, (v) => v.toFixed(3))),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 function caseCard(c) {
@@ -2727,7 +2875,7 @@ function caseCard(c) {
     el(
       'div',
       { class: 'case-body' },
-      el('span', { class: 'case-outcome', 'data-group': c.group }, OUTCOME[c.group].short),
+      el('span', { class: 'case-outcome', 'data-group': c.group, 'data-final': String(c.final !== false) }, outcomeShort(c)),
       el('h4', {}, el('i', {}, c.name)),
       el('div', { class: 'case-cite' }, c.cite),
       el('p', { class: 'case-pairing' }, c.pairing),
@@ -2760,10 +2908,13 @@ async function loadCase(c) {
     await setSlot('a', fa, { keepCase: true });
     await setSlot('b', fb, { keepCase: true });
     state.case = c;
+    for (const pick of document.querySelectorAll('.case-pick')) pick.value = c.id;
     startScan();
+    return true;
   } catch (err) {
     console.error(err);
     toast('Could not load the images for this case.');
+    return false;
   }
 }
 
@@ -2779,7 +2930,7 @@ function renderCaseBanner() {
     el(
       'div',
       { class: 'case-banner-top' },
-      el('span', { class: 'case-outcome', 'data-group': c.group }, OUTCOME[c.group].long),
+      el('span', { class: 'case-outcome', 'data-group': c.group, 'data-final': String(c.final !== false) }, outcomeLong(c)),
       el('span', { class: 'case-banner-name' }, el('i', {}, c.name), `, ${c.cite}`),
     ),
     el('p', { class: 'case-banner-pairing' }, c.pairing, c.note ? ` — ${c.note}` : ''),
@@ -2879,6 +3030,8 @@ function init() {
   renderCases();
   loadCaseManifest();
   for (const s of SAMPLES) $('#samples').append(el('button', { type: 'button', class: 'pill', onclick: () => loadSample(s) }, s.label));
+  for (const pick of document.querySelectorAll('.case-pick')) pick.addEventListener('change', () => pickCase(pick.value));
+  $('#runAllCases').addEventListener('click', runAllCases);
   $('#scanBtn').addEventListener('click', startScan);
   $('#labBtn').addEventListener('click', openLab);
   $('#labLink').addEventListener('click', (e) => {

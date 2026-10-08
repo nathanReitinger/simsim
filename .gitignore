@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 tools/bench/img/
 tools/bench/*.json
+assets/cases/more/

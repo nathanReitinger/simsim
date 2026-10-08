@@ -41,5 +41,47 @@
     "aLabel": "Andrea Blanch, Silk Sandals by Gucci (Allure, 2000)",
     "bLabel": "Jeff Koons, Niagara (2000)",
     "source": "Blanch v. Koons, 467 F.3d 244 (2d Cir. 2006), appendix scans (copy hosted by Berkeley Law)"
+  },
+  "leibovitz-v-paramount": {
+    "a": "leibovitz-v-paramount/a.jpg",
+    "b": "leibovitz-v-paramount/b.jpg",
+    "aLabel": "Annie Leibovitz, Demi Moore on the cover of Vanity Fair (August 1991)",
+    "bLabel": "Paramount Pictures, advertisement for Naked Gun 33⅓: The Final Insult (1994)",
+    "source": "Course materials (images supplied by the instructor)"
+  },
+  "rogers-v-koons": {
+    "a": "rogers-v-koons/a.jpg",
+    "b": "rogers-v-koons/b.jpg",
+    "aLabel": "Art Rogers, Puppies (1985)",
+    "bLabel": "Jeff Koons, String of Puppies (1988)",
+    "source": "Course materials (images supplied by the instructor)"
+  },
+  "cariou-v-prince": {
+    "a": "cariou-v-prince/a.jpg",
+    "b": "cariou-v-prince/b.jpg",
+    "aLabel": "Patrick Cariou, photograph from Yes Rasta (2000)",
+    "bLabel": "Richard Prince, Graduation, from the Canal Zone series (2008)",
+    "source": "Course materials (images supplied by the instructor)"
+  },
+  "friedman-v-guetta": {
+    "a": "friedman-v-guetta/a.jpg",
+    "b": "friedman-v-guetta/b.jpg",
+    "aLabel": "Glen E. Friedman, photograph of Run-DMC (1985)",
+    "bLabel": "Thierry Guetta (Mr. Brainwash), work based on the photograph (2008)",
+    "source": "Course materials (images supplied by the instructor)"
+  },
+  "steinberg-v-columbia": {
+    "a": "steinberg-v-columbia/a.jpg",
+    "b": "steinberg-v-columbia/b.jpg",
+    "aLabel": "Saul Steinberg, View of the World from 9th Avenue, The New Yorker cover (March 29, 1976)",
+    "bLabel": "Columbia Pictures, poster for Moscow on the Hudson (1984)",
+    "source": "Course materials (images supplied by the instructor)"
+  },
+  "sedlik-v-kat-von-d": {
+    "a": "sedlik-v-kat-von-d/a.jpg",
+    "b": "sedlik-v-kat-von-d/b.jpg",
+    "aLabel": "Jeffrey Sedlik, portrait of Miles Davis (1989)",
+    "bLabel": "Kat Von D (Katherine Von Drachenberg), tattoo of Miles Davis (2017)",
+    "source": "Course materials (images supplied by the instructor)"
   }
 }

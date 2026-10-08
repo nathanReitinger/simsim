@@ -19,5 +19,8 @@ work and **B** the defendant's. A case's "Compare the works" button appears once
 - JPEG, PNG or WebP all work. About 1,600 px on the long side is plenty and keeps the repository small.
 - `aLabel` / `bLabel` are optional captions shown with the results.
 - Keys starting with `_` are ignored.
+- The holding shown with each case comes from its group in `js/cases.js` (infringement, fair use, no
+  infringement). For a mixed or unfinished result, give the case an `outcome` (short label), a `holding`
+  (full sentence) and `final: false`, as Cariou v. Prince and Sedlik v. Kat Von D do.
 
 Everything in this repository is published on the public website.
