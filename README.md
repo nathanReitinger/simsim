@@ -2,7 +2,7 @@
 
 **Live site: <https://nathanreitinger.github.io/simsim/>**
 
-A VirusTotal-style scanner for image similarity. Drop two images and **79 tests** run side by side — from
+A VirusTotal-style scanner for image similarity. Drop two images and **99 tests** run side by side — from
 byte-level file hashes to Meta's **SSCD** copy detector — and the page reports how many of them flag the pair
 as similar, with an explanation of every test.
 
@@ -19,17 +19,21 @@ requests welcome.
 | --- | --- |
 | **Neural copy detection** | SSCD ResNet-50 (`sscd_disc_mixup`, official preprocessing) · SSCD after alignment (crop, rotation, perspective or mirroring undone with the keypoint transform, then SSCD on the shared region) · SSCD ResNeXt-101 in the Somepalli et al. replication setting (`sscd_disc_large`, resize 256 / centre-crop 224) · DINOv2 ViT-S/14 · CLIP ViT-B/32 · DreamSim (OpenCLIP ViT-B/32 tuned on human similarity judgments) · LPIPS (AlexNet) |
 | **Objects** | D-FINE object detector (365 Objects365 categories): objects are found in both images, paired up and compared one by one, with marked-up images in the Objects tab · body pose similarity (ViTPose-B, 17 joints per person, Procrustes + OKS, mirror-aware) |
-| **Exact & verbatim** | SHA-256 · SHA-1 · MD5 · same image data with metadata set aside (hash of the JPEG scans / PNG image chunks / WebP bitstream) · pixel-exact match of decoded pixels · verbatim crop search (template matching, verified pixel-for-pixel) |
-| **Perceptual hashes** | PDQ (Meta) · PDQ over all 8 rotations/mirrors · pHash · dHash · aHash · wHash · Blockhash |
-| **Keypoints & geometry** | ORB, AKAZE and BRISK keypoints with RANSAC homography · XFeat learned keypoints (CVPR 2024) with mutual-nearest-neighbour matching · retry against a mirrored B · SSIM after aligning B onto A |
-| **Pixel & structural** | SSIM · MS-SSIM · PSNR · normalised cross-correlation · UQI · GMSD · CIEDE2000 ΔE · changed-pixel ratio · Carlini et al.’s tiled ℓ2 extraction test (512², worst of 16 tiles, ≤ 0.15) |
-| **Colour & histograms** | Hue–saturation correlation · χ² · RGB histogram intersection · Bhattacharyya · brightness EMD |
-| **Metadata & provenance** | Content Credentials (C2PA: signer, tool, actions, generative-AI declarations, and whether B lists A as an ingredient — read with the official C2PA SDK, loaded only when a file carries a manifest) · EXIF capture fields (camera, timestamp, unique IDs) · copyright management information (XMP/IPTC/EXIF creator, rights, credit, licence — flagged when B drops A’s) · XMP edit history (DocumentID, DerivedFrom, DocumentAncestors; AI-generator settings in PNG text) · JPEG encoder fingerprint (quantization tables, estimated quality, subsampling) · embedded EXIF preview vs both images · Stable Diffusion’s invisible watermark (the invisible-watermark “dwtDct” mark written by the SD 1.x/2.x reference scripts and the SDXL pipeline; decoder verified bit-for-bit against the reference library) |
+| **Exact & verbatim** | SHA-256 · SHA-1 · MD5 · SHA-512 · SHA3-256 · BLAKE2b · CRC-32 · same image data with metadata set aside (hash of the JPEG scans / PNG image chunks / WebP bitstream) · pixel-exact match of decoded pixels · verbatim crop search (template matching, verified pixel-for-pixel) |
+| **Fuzzy file hashes** | ssdeep (context-triggered piecewise hashing) · TLSH (Trend Micro) · Nilsimsa · LZJD (Lempel-Ziv Jaccard distance) — byte-level similarity of the files, as used in digital forensics and malware analysis |
+| **Perceptual hashes** | PDQ (Meta) · PDQ over all 8 rotations/mirrors · pHash · pHash (simple) · dHash · dHash (vertical) · aHash · wHash (Haar) · wHash (Daubechies) · colour hash · crop-resistant hash (segment-wise) · Blockhash · OpenCV img_hash block-mean (two modes), Marr–Hildreth, radial-variance and colour-moment hashes |
+| **Keypoints & geometry** | ORB, AKAZE, BRISK and KAZE keypoints with RANSAC homography · XFeat learned keypoints (CVPR 2024) with mutual-nearest-neighbour matching · retry against a mirrored B · Fourier–Mellin (log-polar phase correlation: rotation and scale) · phase correlation (shift) · multi-scale template search · SSIM after aligning B onto A |
+| **Pixel & structural** | SSIM · MS-SSIM · PSNR · normalised cross-correlation · UQI · GMSD · multi-scale GMSD · FSIM · VSI · HaarPSI · VIF · DSS · MDSI · normalised mutual information · CIEDE2000 ΔE · changed-pixel ratio · Carlini et al.’s tiled ℓ2 extraction test (512², worst of 16 tiles, ≤ 0.15) · edge agreement (Pratt’s figure of merit) · edge distance (modified Hausdorff) · normalised compression distance |
+| **Colour & histograms** | RGB-histogram correlation · χ² · intersection · Bhattacharyya · Kullback–Leibler · Jensen–Shannon · Kolmogorov–Smirnov (brightness) · brightness EMD · colour moments · colour coherence vectors · colour correlogram · dominant-palette EMD · average colour (CIEDE2000) |
+| **Texture & shape** | GIST scene descriptor · histogram of oriented gradients · Gabor texture energy · Haralick (GLCM) texture · local binary patterns · Zernike moments · Hu moments |
+| **Metadata & provenance** | Content Credentials (C2PA: signer, tool, actions, generative-AI declarations, and whether B lists A as an ingredient — read with the official C2PA SDK, loaded only when a file carries a manifest) · EXIF capture fields (camera, timestamp, unique IDs) · GPS location · copyright management information (XMP/IPTC/EXIF creator, rights, credit, licence — flagged when B drops A’s) · XMP edit history (DocumentID, DerivedFrom, DocumentAncestors; AI-generator settings in PNG text) · JPEG encoder fingerprint (quantization tables, estimated quality, subsampling) · embedded EXIF preview vs both images · ICC colour profile · dimensions & aspect ratio · Stable Diffusion’s invisible watermark (the invisible-watermark “dwtDct” mark written by the SD 1.x/2.x reference scripts and the SDXL pipeline; decoder verified bit-for-bit against the reference library) |
 
 Each test has a verdict (*Identical*, *Match*, *Partial*, *No match*, *N/A*). Thresholds come from the source
 papers where they exist — SSCD ≥ 0.75 (90% precision on DISC2021, per the SSCD authors), SSCD > 0.5 for
-replication (Somepalli et al., CVPR 2023 / NeurIPS 2023), PDQ ≤ 31 bits (Meta) — and are labelled as heuristics
-elsewhere. All thresholds live in [`js/engines.js`](js/engines.js).
+replication (Somepalli et al., CVPR 2023 / NeurIPS 2023), PDQ ≤ 31 bits (Meta). Where the literature gives no
+threshold, the *match* line is set on the benchmark below so that 1% of unrelated pairs pass, and the *partial*
+line so that 5% pass; each test’s explanation says which kind of threshold it uses. All thresholds live in
+[`js/engines.js`](js/engines.js).
 
 ## Seeing where images are similar
 
@@ -169,7 +173,28 @@ The JavaScript implementations were checked against the standard Python implemen
 - SSIM matches `skimage.metrics.structural_similarity` and MS-SSIM matches `pytorch_msssim` (within 1e-5);
   CIEDE2000 matches `skimage` and the Sharma et al. test data;
 - the neural preprocessing reproduces torchvision / Hugging Face pipelines, and similarities computed in
-  JavaScript match Python ONNX Runtime within 1e-6.
+  JavaScript match Python ONNX Runtime within 1e-6;
+- SHA-512, SHA3-256, BLAKE2b and CRC-32 equal Python’s `hashlib` / `zlib`; ssdeep equals `ppdeep`, TLSH
+  `py-tlsh`, Nilsimsa the `nilsimsa` package, and LZJD `pyLZJD` digest for digest (including pyLZJD’s own
+  approximate selection of the smallest hashes);
+- the extra `imagehash` hashes (simple pHash, vertical dHash, Daubechies wHash, colour hash and the
+  crop-resistant hash, with Pillow’s Gaussian blur and median filter ported for it) are bit-identical on all
+  380 benchmark images;
+- OpenCV’s img_hash: block-mean hashes are bit-identical; the Marr–Hildreth and radial-variance logic is exact
+  when fed OpenCV’s own intermediate images, and colour-moment Hu moments agree to 2e-10. Run end to end in the
+  browser the results differ slightly from native OpenCV (85% / 97% of images identical), because OpenCV’s
+  WebAssembly build rounds a few pixels of its resizing and filtering differently from the native build;
+- colour: Kullback–Leibler matches OpenCV’s `compareHist`, Jensen–Shannon and Kolmogorov–Smirnov match SciPy,
+  the palette Earth Mover’s distance matches SciPy’s HiGHS solver to 1e-14, and colour moments, coherence vectors
+  and correlograms match NumPy implementations of the papers;
+- texture: LBP, HOG and GLCM match scikit-image exactly, Gabor energies match scikit-image kernels with SciPy
+  convolution (1e-13), GIST matches a NumPy port of LMgist.m (1e-14), Zernike moments match mahotas (1e-15) and
+  Hu-moment matching matches OpenCV; the FFT used throughout matches `numpy.fft` (1e-15);
+- VIF, HaarPSI, MDSI, multi-scale GMSD, FSIM and VSI match `piq` in double precision (≤ 4e-12; DSS ≤ 3e-7, from
+  PyTorch’s summation order), and normalised mutual information matches scikit-image;
+- phase correlation and the Hanning window match OpenCV (1e-12); Canny edges are identical to native OpenCV,
+  Pratt’s figure of merit matches a SciPy distance transform and the modified Hausdorff distance scikit-image;
+  compressed sizes for NCD are identical to zlib; embedded ICC profiles and their descriptions match Pillow.
 
 ### Benchmark of the copy detectors
 
@@ -189,6 +214,40 @@ contrast, a combined crop+mirror+recolour+caption edit, and a collage that paste
 | DreamSim | 0.993 | 90.0% | (not a copy detector: it tracks how alike people find the images) |
 | CLIP | 0.983 | 83.7% | |
 | pHash | 0.827 | 52.6% | |
+
+The classic (non-neural) tests on the same benchmark — AUC, and the share of edited copies each finds at its
+*match* line (which lets through at most 1% of the unrelated pairs):
+
+<details>
+<summary>All classic tests</summary>
+
+| Group | Test | AUC | Copies found |
+| --- | --- | --- | --- |
+| Hashes | dHash · pHash · aHash · wHash | 0.86 · 0.83 · 0.83 · 0.85 | 44% · 42% · 45% · 45% |
+| | PDQ · PDQ + rotations/mirrors · Blockhash | 0.77 · 0.82 · 0.84 | 39% · 46% · 43% |
+| | Marr–Hildreth · crop-resistant · vertical dHash · block mean (×2) | 0.88 · 0.87 · 0.87 · 0.84 | 58% · 49% · 59% · 53% |
+| | radial variance · colour moments (Hu) · simple pHash · Daubechies wHash | 0.80 · 0.82 · 0.78 · 0.77 | 48% · 32% · 51% · 50% |
+| Geometry | KAZE keypoints (standard rule) | 0.88 | 71% (no false alarms) |
+| | Fourier–Mellin · phase correlation · multi-scale template | 0.94 · 0.86 · 0.86 | 80% · 66% · 60% |
+| Structure | NCD · VSI · HaarPSI · FSIM | 0.95 · 0.90 · 0.90 · 0.87 | 63% · 58% · 47% · 48% |
+| | UQI · ΔE · NCC · MS-SSIM · SSIM · PSNR · GMSD | 0.89 · 0.89 · 0.84 · 0.83 · 0.82 · 0.81 · 0.78 | 26% · 27% · 39% · 37% · 38% · 12% · 32% |
+| | VIF · NMI · DSS · MS-GMSD · MDSI | 0.82 · 0.82 · 0.81 · 0.78 · 0.73 | 53% · 55% · 44% · 43% · 26% |
+| | Pratt’s FOM · modified Hausdorff | 0.82 · 0.78 | 39% · 31% |
+| Colour | coherence vectors · intersection · χ² · Jensen–Shannon · Bhattacharyya | 0.96 · 0.95 · 0.95 · 0.95 · 0.94 | 74% · 70% · 66% · 60% · 60% |
+| | correlation · KL · KS · palette EMD · brightness EMD | 0.94 · 0.93 · 0.91 · 0.91 · 0.90 | 43% · 65% · 46% · 48% · 45% |
+| | colour moments · correlogram · average colour | 0.89 · 0.88 · 0.88 | 40% · 43% · 44% |
+| Texture & shape | GIST · Gabor · GLCM · Hu moments · HOG · Zernike · LBP | 0.94 · 0.88 · 0.88 · 0.86 · 0.84 · 0.81 · 0.72 | 56% · 56% · 38% · 33% · 48% · 47% · 30% |
+
+The byte-level fuzzy hashes are not in the table: a re-encoded image shares almost no bytes with the original,
+so they find only the copies whose files kept most of their bytes (ssdeep 29, Nilsimsa 36, LZJD 42 of 361),
+while no unrelated pair ever reached their match lines.
+
+</details>
+
+Tried and left out: an affine ECC alignment score (it converged differently in the browser and in native
+OpenCV, and found spurious alignments between unrelated images), the spectral angle mapper (any two
+black-and-white images score as identical), and OpenCV’s hue–saturation histograms, which flagged a fifth to a
+third of unrelated pairs for the same reason; the histogram tests now use 8×8×8 RGB histograms.
 
 ICDiff’s PDF-Embedding (Wang et al., NeurIPS 2024), which predicts a 0–5 “replication level” for diffusion
 outputs and correlates with human labels on its own D-Rep data far better than SSCD, was also tested and not
@@ -226,8 +285,17 @@ carried SSCD’s evidence did not help.
 - [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) 1.30 (MIT),
   [OpenCV.js](https://github.com/TechStark/opencv-js) 4.12 (Apache-2.0),
   [exifr](https://github.com/MikeKovarik/exifr) 7.1 (MIT) — in `vendor/` with their licences.
-- Perceptual hash algorithms follow [imagehash](https://github.com/JohannesBuchner/imagehash),
+- Perceptual hash algorithms follow [imagehash](https://github.com/JohannesBuchner/imagehash) (BSD-2-Clause),
   [blockhash](https://github.com/commonsmachinery/blockhash-js) and
-  [PDQ](https://github.com/facebook/ThreatExchange/tree/main/pdq).
+  [PDQ](https://github.com/facebook/ThreatExchange/tree/main/pdq); the block-mean, Marr–Hildreth,
+  radial-variance and colour-moment hashes follow OpenCV’s `img_hash` module (Apache-2.0).
+- Fuzzy hashes: ssdeep ported from [ppdeep](https://github.com/elceef/ppdeep) (Apache-2.0); TLSH is Trend
+  Micro’s [JavaScript port](https://github.com/trendmicro/tlsh) (Apache-2.0 or BSD); LZJD ported from
+  [pyLZJD](https://github.com/EdwardRaff/pyLZJD) (Apache-2.0); Nilsimsa from the
+  [nilsimsa](https://pypi.org/project/nilsimsa/) package (MIT).
+- Quality metrics follow [piq](https://github.com/photosynthesis-team/piq) (Apache-2.0); LBP, HOG, GLCM, Gabor
+  kernels and NMI follow [scikit-image](https://scikit-image.org/) (BSD-3-Clause); Zernike moments follow
+  [mahotas](https://github.com/luispedro/mahotas) (MIT); GIST follows Oliva & Torralba’s LMgist.m; Pillow’s
+  Gaussian blur and median filter are ported for the crop-resistant hash (Pillow licence).
 - Example photos (via scikit-image): Eileen Collins (NASA, public domain), Falcon 9 launch (SpaceX, public
   domain), Chelsea the cat (Stefan van der Walt, CC0), coffee (Rachel Michetti, CC0).

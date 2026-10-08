@@ -11,6 +11,7 @@ function makeDetector(cv, kind) {
   if (kind === 'orb') return new cv.ORB(3000);
   if (kind === 'akaze') return new cv.AKAZE();
   if (kind === 'brisk') return new cv.BRISK();
+  if (kind === 'kaze') return new cv.KAZE();
   throw new Error(`unknown detector ${kind}`);
 }
 
@@ -66,7 +67,8 @@ export function matchFeatures(cv, A, B, kind) {
     const res = { keypointsA: kA.size(), keypointsB: kB.size(), good: 0, inliers: 0, H: null, sane: false, matches: [] };
     if (dA.rows < 2 || dB.rows < 2) return res;
 
-    const bf = keep(new cv.BFMatcher(cv.NORM_HAMMING, false));
+    // KAZE describes keypoints with real numbers; the others with bit strings
+    const bf = keep(new cv.BFMatcher(kind === 'kaze' ? cv.NORM_L2 : cv.NORM_HAMMING, false));
     const knn = keep(new cv.DMatchVectorVector());
     bf.knnMatch(dB, dA, knn, 2);
     const src = [];

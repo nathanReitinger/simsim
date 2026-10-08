@@ -3,7 +3,7 @@
 
 import { ENGINE_BY_ID, verdictFor } from './engines.js';
 import { blake2b256, crc32, md5, sha, sha3_256 } from './lib/digest.js';
-import { ssdeepCompare, ssdeepHash, tlshDiff, tlshHash } from './lib/fuzzy.js';
+import { lzjdDigest, lzjdSimilarity, nilsimsaCompare, nilsimsaDigest, ssdeepCompare, ssdeepHash, tlshDiff, tlshHash } from './lib/fuzzy.js';
 import { cropImg, fitWithin, grayPIL, lumaFloat, resizeImg, rgbaToRgb } from './lib/pixels.js';
 import * as H from './lib/hashes.js';
 import * as IH from './lib/imghash.js';
@@ -11,6 +11,9 @@ import * as Q from './lib/iqa.js';
 import * as G from './lib/histogram.js';
 import * as CS from './lib/colorstats.js';
 import * as TX from './lib/texture.js';
+import * as RG from './lib/registration.js';
+import * as E from './lib/edges.js';
+import * as PQ from './lib/perceptual.js';
 import * as F from './lib/features.js';
 import * as N from './lib/neural.js';
 import * as O from './lib/objects.js';
@@ -26,21 +29,24 @@ const ROOT = new URL('../', import.meta.url);
 const WORK_MAX = 4096; // longest side kept for hashing and embeddings
 const PAIR_MAX = 512; // aligned pair for pixel / structural metrics
 const FEATURE_MAX = 800; // keypoint detection
+const KAZE_MAX = 512; // KAZE is slow; it runs smaller and its results are rescaled
 const LPIPS_MAX = 256;
 const CROP_MAX = 640; // template search
 
 const ORDER = [
   'sha256', 'sha1', 'md5', 'sha512', 'sha3', 'blake2b', 'crc32', 'payload', 'pixels',
-  'ssdeep', 'tlsh',
+  'ssdeep', 'tlsh', 'nilsimsa', 'lzjd',
   'pdq', 'pdqDihedral', 'phash', 'dhash', 'ahash', 'whash', 'blockhash',
   'phashSimple', 'dhashVertical', 'whashDb4', 'colorhash', 'cropResistant',
   'blockMean0', 'blockMean1', 'marrHildreth', 'radialVariance', 'colorMoment',
   'ssim', 'msssim', 'psnr', 'ncc', 'uqi', 'gmsd', 'deltaE', 'changed', 'carlini',
+  'fsim', 'vsi', 'haarpsi', 'vif', 'nmi', 'dss', 'msGmsd', 'mdsi',
+  'prattFom', 'modHausdorff', 'ncd',
   'histCorrel', 'histChi', 'histIntersect', 'histBhatt', 'lumaEmd',
   'klDiv', 'jsDiv', 'ksLuma', 'hsvMoments', 'ccv', 'correlogram', 'paletteEmd', 'meanColor',
   'gist', 'hog', 'gabor', 'glcm', 'lbp', 'zernike', 'huMoments',
-  'exif', 'cmi', 'lineage', 'jpegq', 'thumbnail', 'sdmark',
-  'crop', 'orb', 'akaze', 'brisk', 'xfeat', 'alignedSsim',
+  'exif', 'gps', 'cmi', 'lineage', 'jpegq', 'thumbnail', 'icc', 'dims', 'sdmark',
+  'crop', 'orb', 'akaze', 'brisk', 'kaze', 'xfeat', 'fourierMellin', 'phaseCorr', 'msTemplate', 'alignedSsim',
   'sscd', 'sscdAligned', 'sscdLarge', 'dino', 'clip', 'dreamsim', 'lpips',
   'objects', 'pose',
 ];
@@ -247,9 +253,30 @@ class Ctx {
     });
   }
 
+  /** Canny edges of the aligned pair and distance maps to them (OpenCV). */
+  edges() {
+    return this.get('edges', async () => {
+      const cv = await loadOpenCV();
+      const { w, h, GA, GB } = this.pair;
+      const ea = E.cannyEdges(cv, GA, w, h);
+      const eb = E.cannyEdges(cv, GB, w, h);
+      return { ea, eb, da: E.distanceToEdges(cv, ea, w, h), db: E.distanceToEdges(cv, eb, w, h) };
+    });
+  }
+
   /** The image shrunk to at most 256 px (box filter), for global colour descriptors. */
   small(side) {
     return this.get(`small-${side}`, () => CS.shrink(this[side].work, 256));
+  }
+
+  /** Grey image fitted inside `max` px (the shared keypoint frame when max ≥ FEATURE_MAX). */
+  featureImgAt(side, max) {
+    if (max >= FEATURE_MAX) return this.featureImg(side);
+    return this.get(`feat-${side}-${max}`, () => {
+      const img = this[side].work;
+      const [w, h] = fitWithin(img.w, img.h, max);
+      return { w, h, gray: grayPIL(resizeImg(img, w, h, 'bilinear')) };
+    });
   }
 
   featureImg(side) {
@@ -276,6 +303,12 @@ const exact = (x, y) => ({
   detail: { A: x, B: y },
 });
 
+/** Size of bytes after raw deflate (the browser's own zlib, default level). */
+async function deflatedSize(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  return (await new Response(stream).arrayBuffer()).byteLength;
+}
+
 const toHex = (bytes) => Array.from(bytes, (v) => v.toString(16).padStart(2, '0')).join('');
 
 /** CIELAB (D65) -> '#rrggbb', for showing palette colours. */
@@ -288,6 +321,13 @@ function labToHex([L, a, b]) {
   const lin = [3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z, -0.969266 * X + 1.8760108 * Y + 0.041556 * Z, 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z];
   const srgb = lin.map((v) => Math.round(255 * Math.min(1, Math.max(0, v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055))));
   return `#${srgb.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** A full-reference quality metric on the aligned pair (A as the reference). */
+function fullReference(c, metric) {
+  const value = metric(c.pair.A, c.pair.B);
+  if (value === null || !Number.isFinite(value)) return { verdict: 'na', display: 'n/a', note: 'The images are too small for this measure.' };
+  return { value, note: c.aspectNote() };
 }
 
 /** One of OpenCV's img_hash hashes (bytes), compared by Hamming distance. */
@@ -373,7 +413,19 @@ const TOO_SMALL = (c) => Math.min(c.a.w, c.a.h, c.b.w, c.b.h) < 32;
 async function featureRun(c, kind) {
   if (TOO_SMALL(c)) return { verdict: 'na', display: 'too small', note: 'Keypoint detectors need images at least 32 pixels on each side.' };
   const cv = await loadOpenCV();
-  const r = F.matchFeatures(cv, c.featureImg('a'), c.featureImg('b'), kind);
+  let r;
+  if (kind === 'kaze') {
+    const A = c.featureImgAt('a', KAZE_MAX);
+    const B = c.featureImgAt('b', KAZE_MAX);
+    r = F.matchFeatures(cv, A, B, kind);
+    // express the transform and matches in the shared keypoint frame
+    const ka = c.featureImg('a').w / A.w;
+    const kb = c.featureImg('b').w / B.w;
+    if (r.H) r.H = mat3(mat3(scale3(ka), r.H), scale3(1 / kb));
+    r.matches = r.matches.map(([xb, yb, xa, ya]) => [xb * kb, yb * kb, xa * ka, ya * ka]);
+  } else {
+    r = F.matchFeatures(cv, c.featureImg('a'), c.featureImg('b'), kind);
+  }
   c.features[kind] = r;
   const ratio = r.good ? r.inliers / r.good : 0;
   let verdict = 'none';
@@ -655,6 +707,17 @@ const RUN = {
     const a = ssdeepHash(c.a.bytes);
     const b = ssdeepHash(c.b.bytes);
     return { value: ssdeepCompare(a, b), detail: { A: a, B: b } };
+  },
+  nilsimsa(c) {
+    const a = nilsimsaDigest(c.a.bytes);
+    const b = nilsimsaDigest(c.b.bytes);
+    return { value: nilsimsaCompare(a, b), detail: { A: toHex(a), B: toHex(b) } };
+  },
+  lzjd(c) {
+    const a = lzjdDigest(c.a.bytes);
+    const b = lzjdDigest(c.b.bytes);
+    if (!a || !b) return { verdict: 'na', display: 'n/a', note: 'One of the files is too large for this test.' };
+    return { value: lzjdSimilarity(a, b) };
   },
   tlsh(c) {
     const a = tlshHash(c.a.bytes);
@@ -1066,6 +1129,76 @@ const RUN = {
       for (const m of mats) m.delete();
     }
   },
+  fsim: (c) => fullReference(c, PQ.fsim),
+  vsi: (c) => fullReference(c, PQ.vsi),
+  haarpsi: (c) => fullReference(c, PQ.haarpsi),
+  vif: (c) => fullReference(c, PQ.vifp),
+  dss: (c) => fullReference(c, PQ.dss),
+  msGmsd: (c) => fullReference(c, PQ.msGmsd),
+  mdsi: (c) => fullReference(c, PQ.mdsi),
+  nmi: (c) => ({ value: PQ.nmi(c.pair.GA, c.pair.GB), note: c.aspectNote() }),
+  async prattFom(c) {
+    const e = await c.edges();
+    const v = E.prattFom(e.ea, e.eb, e.da, e.db);
+    if (v === null) return { verdict: 'na', display: 'no edges', note: 'One image has no edges to compare.' };
+    return { value: v, note: c.aspectNote() };
+  },
+  async modHausdorff(c) {
+    const e = await c.edges();
+    const v = E.modifiedHausdorff(e.ea, e.eb, e.da, e.db);
+    if (v === null) return { verdict: 'na', display: 'no edges', note: 'One image has no edges to compare.' };
+    return { value: v, note: c.aspectNote() };
+  },
+  async ncd(c) {
+    const g = (img) => grayPIL(resizeImg(img, 128, 128, 'bilinear'));
+    const x = g(c.a.work);
+    const y = g(c.b.work);
+    const xy = new Uint8Array(x.length + y.length);
+    xy.set(x);
+    xy.set(y, x.length);
+    const [cx, cy, cxy] = await Promise.all([deflatedSize(x), deflatedSize(y), deflatedSize(xy)]);
+    return { value: (cxy - Math.min(cx, cy)) / Math.max(cx, cy), detail: { 'compressed A / B / both': `${cx} / ${cy} / ${cxy} bytes` } };
+  },
+  gps(c) {
+    const at = (e) => (e && typeof e.latitude === 'number' && typeof e.longitude === 'number' ? [e.latitude, e.longitude] : null);
+    const a = at(c.a.exif);
+    const b = at(c.b.exif);
+    const fmt = (p) => (p ? `${p[0].toFixed(5)}, ${p[1].toFixed(5)}` : 'none');
+    const detail = { A: fmt(a), B: fmt(b) };
+    if (!a || !b) return { verdict: 'na', display: 'no GPS', detail, note: 'Needs location tags in both files; phones add them, most websites strip them.' };
+    // haversine distance
+    const R = 6371008.8;
+    const rad = Math.PI / 180;
+    const dLat = (b[0] - a[0]) * rad;
+    const dLon = (b[1] - a[1]) * rad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * rad) * Math.cos(b[0] * rad) * Math.sin(dLon / 2) ** 2;
+    return { value: 2 * R * Math.asin(Math.min(1, Math.sqrt(h))), detail };
+  },
+  icc(c) {
+    const a = c.a.prov?.info?.icc;
+    const b = c.b.prov?.info?.icc;
+    const ia = a ? P.iccInfo(a) : null;
+    const ib = b ? P.iccInfo(b) : null;
+    const describe = (i, bytes) => (i ? `${i.description || 'unnamed'} (${i.colorSpace}, v${i.version}${i.created ? `, ${i.created}` : ''}, ${bytes.length.toLocaleString()} bytes)` : 'none');
+    const detail = { A: describe(ia, a), B: describe(ib, b) };
+    if (!a && !b) return { verdict: 'na', display: 'none', detail, note: 'Neither file embeds a colour profile.' };
+    if (!a || !b) return { verdict: 'na', display: `only ${a ? 'A' : 'B'} has one`, detail, note: 'Only one file embeds a colour profile, so there is nothing to compare (editors and browsers often add or drop profiles on re-saving).' };
+    const same = a.length === b.length && a.every((v, i) => v === b[i]);
+    const standard = /sRGB|Display P3|Adobe RGB|ProPhoto|Generic (Gray|RGB|CMYK)|Dot Gain|ColorMatch|709|2020|DCI|Coated|Uncoated|Gamma/i.test(ia?.description || '');
+    if (same) return standard ? { verdict: 'partial', display: 'same standard profile', detail } : { verdict: 'match', display: 'same custom profile', detail };
+    if (ia?.description && ia.description === ib?.description) return { verdict: 'partial', display: 'same profile name', detail };
+    return { verdict: 'none', display: 'different', detail };
+  },
+  dims(c) {
+    const { a, b } = c;
+    const detail = { A: `${a.w} × ${a.h}`, B: `${b.w} × ${b.h}`, 'B’s area / A’s': `${Math.round(((b.w * b.h) / (a.w * a.h)) * 100)}%` };
+    if (a.w === b.w && a.h === b.h) return { verdict: 'partial', display: 'same size', detail };
+    const ra = a.w / a.h;
+    const rb = b.w / b.h;
+    if (Math.abs(Math.log(ra / rb)) < 0.01) return { verdict: 'none', display: 'same shape, resized', detail };
+    if (Math.abs(Math.log(ra * rb)) < 0.01) return { verdict: 'none', display: 'same shape, turned 90°', detail };
+    return { verdict: 'none', display: 'different shape', detail };
+  },
   meanColor(c) {
     const r = CS.meanColorDifference(c.small('a'), c.small('b'));
     return { value: r.value, detail: { 'average A': labToHex(r.a), 'average B': labToHex(r.b) } };
@@ -1140,6 +1273,31 @@ const RUN = {
   orb: (c) => featureRun(c, 'orb'),
   akaze: (c) => featureRun(c, 'akaze'),
   brisk: (c) => featureRun(c, 'brisk'),
+  kaze: (c) => featureRun(c, 'kaze'),
+  async fourierMellin(c) {
+    const cv = await loadOpenCV();
+    const r = RG.fourierMellin(cv, RG.letterbox(c.a.work, 128), RG.letterbox(c.b.work, 128), 128);
+    const turn = ((r.angle % 360) + 360) % 360;
+    return { value: r.response, detail: { 'best rotation': `${turn.toFixed(1)}°`, 'best scale': `${r.scale.toFixed(2)}×` } };
+  },
+  phaseCorr(c) {
+    const [w, h] = fitWithin(c.a.work.w, c.a.work.h, 256);
+    const ga = Float64Array.from(grayPIL(resizeImg(c.a.work, w, h, 'bilinear')));
+    const gb = Float64Array.from(grayPIL(resizeImg(c.b.work, w, h, 'bilinear')));
+    const r = RG.phaseCorrelate(ga, gb, w, h, RG.hanningWindow(w, h));
+    const k = c.a.w / w;
+    return { value: r.response, detail: { 'best shift': `${Math.round(r.dx * k)}, ${Math.round(r.dy * k)} px` }, note: c.aspectNote() };
+  },
+  async msTemplate(c) {
+    const cv = await loadOpenCV();
+    const plane = (img) => {
+      const [w, h] = fitWithin(img.w, img.h, 256);
+      return { w, h, gray: grayPIL(resizeImg(img, w, h, 'bilinear')) };
+    };
+    const r = RG.multiScaleTemplate(cv, plane(c.a.work), plane(c.b.work));
+    if (!r) return { verdict: 'na', display: 'n/a', note: 'The images are too small to search at several scales.' };
+    return { value: r.score, detail: { 'best fit': `${r.inside}, at ${Math.round(r.scale * 100)}% size` } };
+  },
   async alignedSsim(c) {
     const best = Object.entries(c.features)
       .filter(([, r]) => r.sane && r.inliers >= 10)

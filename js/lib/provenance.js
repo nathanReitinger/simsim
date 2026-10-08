@@ -69,6 +69,7 @@ function parseJpeg(b) {
     out.segments.push(name);
     const isMeta = (m >= 0xe0 && m <= 0xef) || m === 0xfe;
     if (m === 0xeb && (has(data, 'jumb') || has(data, 'c2pa'))) out.c2pa = true;
+    if (m === 0xe2 && ascii(data, 0, 11) === 'ICC_PROFILE') (out.iccChunks ??= []).push({ seq: data[12], bytes: data.subarray(14) });
     if (m === 0xdb) {
       let k = 0;
       while (k < data.length) {
@@ -96,6 +97,10 @@ function parseJpeg(b) {
       continue;
     }
     i += 2 + len;
+  }
+  if (out.iccChunks) {
+    out.icc = concat(out.iccChunks.sort((x, y) => x.seq - y.seq).map((c) => c.bytes));
+    delete out.iccChunks;
   }
   const luma = out.dqt.find((t) => t.id === (out.components[0]?.tq ?? 0)) || out.dqt[0];
   const chroma = out.components[1] ? out.dqt.find((t) => t.id === out.components[1].tq) : null;
@@ -132,6 +137,7 @@ async function parsePng(b) {
     if (['IHDR', 'PLTE', 'tRNS', 'IDAT', 'acTL', 'fcTL', 'fdAT'].includes(type)) out.payload.push(data);
     if (type === 'caBX') out.c2pa = true;
     try {
+      if (type === 'iCCP') out.icc = await inflate(data.subarray(data.indexOf(0) + 2));
       if (type === 'tEXt') {
         const z = data.indexOf(0);
         out.text[latin1.decode(data.subarray(0, z))] = latin1.decode(data.subarray(z + 1));
@@ -166,9 +172,57 @@ function parseWebp(b) {
     out.segments.push(type.trim());
     if (['VP8 ', 'VP8L', 'ALPH', 'ANMF'].includes(type)) out.payload.push(b.subarray(i + 8, i + 8 + len));
     if (type === 'C2PA') out.c2pa = true;
+    if (type === 'ICCP') out.icc = b.slice(i + 8, i + 8 + len);
     i += 8 + len + (len & 1);
   }
   return out;
+}
+
+function concat(parts) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let k = 0;
+  for (const p of parts) {
+    out.set(p, k);
+    k += p.length;
+  }
+  return out;
+}
+
+/** The main facts in an ICC colour profile's header, and its description tag (v2 'desc' or v4 'mluc'). */
+export function iccInfo(icc) {
+  if (!icc || icc.length < 132) return null;
+  const sig = (o) => ascii(icc, o, 4).replace(/\0/g, '').trim();
+  const info = {
+    cmm: sig(4),
+    version: `${icc[8]}.${icc[9] >> 4}`,
+    deviceClass: sig(12),
+    colorSpace: sig(16),
+    created: icc[24] || icc[25] ? `${u16(icc, 24)}-${String(u16(icc, 26)).padStart(2, '0')}-${String(u16(icc, 28)).padStart(2, '0')}` : null,
+    creator: sig(80),
+    description: null,
+  };
+  const count = u32(icc, 128);
+  for (let t = 0; t < count && 132 + 12 * t + 12 <= icc.length; t++) {
+    const o = 132 + 12 * t;
+    if (sig(o) !== 'desc') continue;
+    const off = u32(icc, o + 4);
+    const type = ascii(icc, off, 4);
+    if (type === 'desc') {
+      const n = u32(icc, off + 8);
+      info.description = ascii(icc, off + 12, Math.max(0, n - 1)).replace(/\0+$/, '');
+    } else if (type === 'mluc') {
+      const recs = u32(icc, off + 8);
+      if (recs) {
+        const len = u32(icc, off + 20);
+        const at = off + u32(icc, off + 24);
+        let str = '';
+        for (let k = 0; k + 1 < len; k += 2) str += String.fromCharCode((icc[at + k] << 8) | icc[at + k + 1]);
+        info.description = str.replace(/\0+$/, '');
+      }
+    }
+    break;
+  }
+  return info;
 }
 
 /** Container-level facts about a file: format, payload parts, encoder details, text chunks. */
