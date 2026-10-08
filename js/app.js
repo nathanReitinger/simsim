@@ -75,6 +75,7 @@ const state = {
   slots: { a: null, b: null },
   scanId: 0,
   scanning: false,
+  scanT0: 0, // when the current scan started (performance.now)
   results: {},
   info: null,
   visuals: null,
@@ -102,6 +103,121 @@ const state = {
 };
 
 const isDisabled = (key) => state.settings.disabled.includes(key);
+
+// ------------------------------------------------------------------ working indicators
+
+// In the spirit of Claude Code's spinner: a star that morphs through
+// · ✢ ✳ ✶ ✻ ✽ and back, a shimmering verb that changes while you wait and,
+// on the larger panels, a little scene that changes every few seconds —
+// orbiting dots, a rocket in a starfield, a radar sweep, a wave in the
+// verdict colours. One timer drives every indicator on the page and stops
+// when none are left.
+
+const GLYPHS = ['·', '✢', '✳︎', '✶', '✻', '✽', '✻', '✶', '✳︎', '✢'];
+const SCENES = ['orbit', 'rocket', 'radar', 'wave'];
+const VERBS = {
+  visuals: [
+    'Lining up A and B',
+    'Matching keypoints',
+    'Warping B onto A',
+    'Hunting for shared patches',
+    'Painting the heat map',
+    'Circling what changed',
+    'Drawing the arrows',
+    'Squinting at the edges',
+  ],
+  objects: ['Looking for objects', 'Drawing boxes', 'Pairing objects up', 'Comparing them one by one', 'Counting hats and cameras'],
+  spectrum: ['Tallying the tests', 'Weighing the scores', 'Finding the right rung'],
+  generic: ['Percolating', 'Cross-examining pixels', 'Comparing notes', 'Reticulating splines', 'Leaving fair use to the courts'],
+};
+const SCENE_ART = `
+<div class="scene scene-orbit"><i class="sun"></i><i class="ring r1"><b></b></i><i class="ring r2"><b></b></i><i class="ring r3"><b></b></i></div>
+<div class="scene scene-rocket"><i class="star s1"></i><i class="star s2"></i><i class="star s3"></i><i class="star s4"></i><i class="star s5"></i><i class="star s6"></i><i class="ship"><i class="flame"></i><svg viewBox="0 0 40 24"><path class="fin" d="M11 7.5 6 2l9 4zm0 9L6 22l9-4z"/><path class="hull" d="M6 12c4-7 18-9 30 0-12 9-26 7-30 0z"/><circle class="window" cx="24" cy="12" r="3"/></svg></i></div>
+<div class="scene scene-radar"><i class="dish"></i><i class="sweep"></i><i class="blip b1"></i><i class="blip b2"></i><i class="blip b3"></i></div>
+<div class="scene scene-wave"><i></i><i></i><i></i><i></i><i></i></div>`;
+const stillMotion = matchMedia('(prefers-reduced-motion: reduce)');
+let loaderTimer = null;
+
+/**
+ * A "working…" indicator. `kind` picks the verbs it cycles through, or pass
+ * `text` for a fixed label (relabel it with setLoaderText). `art` adds the
+ * animated scene, `note` a line of explanation, and `t0` the moment the work
+ * began, so a re-rendered indicator keeps counting where it left off.
+ * `quiet` leaves it out of the accessibility tree when the row already says
+ * what is running.
+ */
+function loader(kind, { text = null, art = false, note = null, time = true, t0 = performance.now(), label = 'Working', quiet = false } = {}) {
+  const seed = Math.floor(Math.random() * 997);
+  const node = el(
+    'div',
+    {
+      class: art ? 'loader loader-panel' : 'loader',
+      role: quiet ? null : 'status',
+      'aria-label': quiet ? null : label,
+      'aria-hidden': quiet ? 'true' : null,
+      dataset: { kind, seed, t0, fixed: text === null ? '' : '1' },
+    },
+    art ? el('div', { class: 'loader-art', 'aria-hidden': 'true', html: SCENE_ART }) : null,
+    el(
+      'div',
+      { class: 'loader-line', 'aria-hidden': 'true' },
+      el('span', { class: 'loader-glyph' }),
+      el('span', { class: 'loader-verb' }, text ?? ''),
+      time ? el('span', { class: 'loader-time' }) : null,
+    ),
+    note ? el('p', { class: 'loader-note' }, note) : null,
+  );
+  tickLoader(node, performance.now());
+  loaderTimer ??= setInterval(tickLoaders, 120);
+  return node;
+}
+
+function tickLoader(n, now) {
+  const t = Math.max(0, now - Number(n.dataset.t0));
+  const seed = Number(n.dataset.seed);
+  $('.loader-glyph', n).textContent = stillMotion.matches ? '✻' : GLYPHS[Math.floor(t / 120) % GLYPHS.length];
+  if (!n.dataset.fixed) {
+    const words = VERBS[n.dataset.kind] || VERBS.generic;
+    const k = Math.floor(t / 2400);
+    if (n.dataset.k !== String(k)) {
+      n.dataset.k = k;
+      const verb = $('.loader-verb', n);
+      verb.textContent = `${words[(seed + k) % words.length]}…`;
+      verb.classList.remove('loader-swap');
+      void verb.offsetWidth; // restart the fade-in
+      verb.classList.add('loader-swap');
+    }
+  }
+  if (n.classList.contains('loader-panel')) n.dataset.scene = SCENES[(seed + Math.floor(t / 7200)) % SCENES.length];
+  const time = $('.loader-time', n);
+  if (time) time.textContent = t >= 1000 ? `${Math.floor(t / 1000)}s` : '';
+}
+
+function tickLoaders() {
+  const nodes = $$('.loader');
+  if (!nodes.length) {
+    clearInterval(loaderTimer);
+    loaderTimer = null;
+    return;
+  }
+  const now = performance.now();
+  for (const n of nodes) tickLoader(n, now);
+}
+
+/** Relabel fixed-text indicators, e.g. with the test that is running now. */
+function setLoaderText(selector, text) {
+  for (const n of $$(selector)) {
+    const verb = $('.loader-verb', n);
+    if (verb.textContent !== text) verb.textContent = text;
+  }
+}
+
+/** The scan's own status line, in the summary card. */
+function endScanStatus() {
+  const box = $('#scanStatus');
+  box.hidden = true;
+  box.replaceChildren();
+}
 
 // ------------------------------------------------------------------ worker & models
 
@@ -191,6 +307,8 @@ function onWorkerMessage(e) {
     case 'running':
       state.results[m.id] = { verdict: 'running' };
       renderEngine(m.id);
+      updateSpotlight(m.id);
+      setLoaderText('.loader[data-kind="scan"]', `${ENGINE_BY_ID[m.id]?.name || m.id}…`);
       break;
     case 'result':
       state.results[m.id] = m.result;
@@ -209,8 +327,15 @@ function onWorkerMessage(e) {
     case 'done':
       state.scanning = false;
       state.elapsed = m.ms;
+      endScanStatus();
       updateSummary();
       updateButtons();
+      if (!state.visuals) {
+        // nothing to show: replace the "working" panels with their final messages
+        renderWhereCard();
+        renderVisual();
+        renderObjects();
+      }
       settleScanWaiters();
       break;
     case 'fatal':
@@ -258,6 +383,12 @@ async function checkCredentials(scanId, info) {
 
 function fail(message) {
   state.scanning = false;
+  endScanStatus();
+  // the scan will not finish what the indicators are waiting for
+  for (const n of $$('#results .loader')) {
+    n.replaceWith(n.classList.contains('loader-panel') ? el('p', { class: 'muted small' }, 'The scan stopped before this part finished.') : '');
+  }
+  $('#spectrum').hidden = true;
   settleScanWaiters();
   const s = $('.summary');
   s.dataset.tone = 'error';
@@ -440,8 +571,13 @@ async function startScan() {
   state.info = null;
   state.visuals = null;
   state.scanning = true;
+  state.scanT0 = performance.now();
   state.openEngines.clear();
   $('#results').hidden = false;
+  const status = $('#scanStatus');
+  status.replaceChildren(loader('scan', { text: 'Reading the files…', t0: state.scanT0, label: 'Scanning the images' }));
+  status.hidden = false;
+  delete $('#spectrum').dataset.pending;
   const s = $('.summary');
   delete s.dataset.tone;
   renderCaseBanner();
@@ -563,7 +699,11 @@ function renderEngine(id) {
   node.dataset.verdict = verdict === 'skipped' || verdict === 'error' ? 'na' : verdict;
   const icon = $('.engine-icon', node);
   const iconKey = verdict === 'skipped' ? 'na' : verdict;
-  icon.innerHTML = ICONS[iconKey] || '';
+  if (verdict === 'running') {
+    if (!$('.loader', icon)) icon.replaceChildren(loader('engine', { text: '', time: false, t0: state.scanT0, quiet: true }));
+  } else {
+    icon.innerHTML = ICONS[iconKey] || '';
+  }
   const value = $('.engine-value', node);
   const label = $('.engine-verdict', node);
   if (!r || verdict === 'pending' || verdict === 'running') {
@@ -739,10 +879,10 @@ function updateSpotlight(id) {
     let text = 'waiting';
     if (r?.verdict === 'skipped') text = 'turned off';
     else if (r?.verdict === 'error') text = 'error';
-    else if (r?.verdict === 'running') text = 'running…';
     else if (engine.model && isDisabled(engine.model)) text = 'turned off';
     value.innerHTML = '';
-    value.append(el('span', { class: 'meter-status' }, text));
+    if (r?.verdict === 'running') value.append(loader('meter', { text: 'running', time: false, t0: state.scanT0, label: `${engine.name} is running` }));
+    else value.append(el('span', { class: 'meter-status' }, text));
   }
 }
 
@@ -910,13 +1050,26 @@ function renderSpectrum() {
   const box = $('#spectrum');
   if (!box) return;
   const done = !state.scanning && Object.keys(state.results).length > 0;
-  box.hidden = !done;
-  if (!done) return;
+  box.hidden = !done && !state.scanning;
+  if (box.hidden) return;
+  const label = el('div', { class: 'spectrum-label' }, 'Where this pair sits on the similarity spectrum');
+  if (!done) {
+    // the rungs, waiting; built once per scan so the indicator keeps running
+    if (box.dataset.pending) return;
+    box.dataset.pending = '1';
+    box.replaceChildren(
+      label,
+      el('ol', { class: 'spectrum-steps pending' }, LEVELS.map((l) => el('li', { title: `${l.label}: detected by ${l.tests}` }, l.label))),
+      loader('spectrum', { t0: state.scanT0, label: 'Placing the pair on the similarity spectrum' }),
+    );
+    return;
+  }
+  delete box.dataset.pending;
   const level = similarityLevel(state.results, state.visuals);
   const info = LEVELS.find((l) => l.id === level.id);
   box.innerHTML = '';
   box.append(
-    el('div', { class: 'spectrum-label' }, 'Where this pair sits on the similarity spectrum'),
+    label,
     el(
       'ol',
       { class: 'spectrum-steps' },
@@ -1632,7 +1785,7 @@ function coverView(cssWidth) {
       readout.textContent = `SSCD on the uncovered images: ${v.sscd.score.toFixed(3)}. Paint over any part of either image.`;
       return;
     }
-    readout.textContent = 'Re-scoring…';
+    readout.replaceChildren(loader('rescore', { text: 'Re-scoring with SSCD…', label: 'Re-scoring' }));
     const image = (side) => {
       const m = masks[side];
       const c = el('canvas', { width: m.width, height: m.height });
@@ -1911,13 +2064,14 @@ function renderWhereCard() {
   const lenses = v ? WHERE_LENSES.filter((l) => l.need(v)) : [];
   if (!lenses.length) {
     box.append(
-      el(
-        'p',
-        { class: 'muted small' },
-        state.scanning
-          ? 'Marked-up views appear here when the scan finishes.'
-          : 'Turn on the DINOv2 or SSCD models in Settings to see where the similarity comes from.',
-      ),
+      state.scanning
+        ? loader('visuals', {
+            art: true,
+            t0: state.scanT0,
+            label: 'Preparing the marked-up views',
+            note: 'Marked-up views of where the similarity comes from appear here when the scan finishes.',
+          })
+        : el('p', { class: 'muted small' }, 'Turn on the DINOv2 or SSCD models in Settings to see where the similarity comes from.'),
     );
     return;
   }
@@ -1986,6 +2140,16 @@ function renderVisual() {
   renderLensExplain();
   if (state.view === 'side' || !v) {
     if (!a || !b) return;
+    if (!v && state.scanning) {
+      viewer.append(
+        loader('visuals', {
+          art: true,
+          t0: state.scanT0,
+          label: 'Preparing more views',
+          note: 'Keypoint matches, heat maps and marked-up differences appear here when the scan finishes.',
+        }),
+      );
+    }
     viewer.append(
       el(
         'div',
@@ -1994,7 +2158,7 @@ function renderVisual() {
         el('figure', {}, el('img', { src: b.url, alt: 'Image B' }), el('figcaption', {}, `B · ${b.w}×${b.h}`)),
       ),
     );
-    caption.textContent = v ? '' : 'More views appear when the scan finishes.';
+    caption.textContent = v || state.scanning ? '' : 'More views appear when the scan finishes.';
     return;
   }
   const displayWidth = Math.min(viewer.clientWidth - 32, Math.max(v.pairA.w, 640));
@@ -2222,6 +2386,17 @@ function renderObjects() {
   const o = state.visuals?.objects;
   const r = state.results.objects;
   if (!o) {
+    if (state.scanning && !isDisabled('dfine') && r?.verdict !== 'skipped' && r?.verdict !== 'error') {
+      panel.append(
+        loader('objects', {
+          art: true,
+          t0: state.scanT0,
+          label: 'Detecting objects',
+          note: 'Objects are detected near the end of the scan; they appear here, paired up and compared, when it finishes.',
+        }),
+      );
+      return;
+    }
     let msg = 'Objects are detected near the end of the scan; they appear here when it finishes.';
     if (r?.verdict === 'skipped' || isDisabled('dfine')) msg = 'The object detector is turned off in Settings.';
     else if (r?.verdict === 'error') msg = `Object detection failed: ${r.note}`;
@@ -2785,12 +2960,14 @@ async function runAllCases() {
     return;
   }
   const ready = CASES.filter((c) => state.caseImages[c.id]);
-  state.batch = { stop: false, rows: [] };
+  state.batch = { stop: false, rows: [], queue: ready, current: null, t0: 0 };
   btn.textContent = 'Stop';
-  renderCaseTable();
   for (const [i, c] of ready.entries()) {
     if (state.batch.stop) break;
     status.textContent = `Scanning ${i + 1} of ${ready.length}: ${c.name}…`;
+    state.batch.current = c;
+    state.batch.t0 = performance.now();
+    renderCaseTable();
     const done = scanFinished();
     if (!(await loadCase(c))) {
       settleScanWaiters();
@@ -2798,20 +2975,26 @@ async function runAllCases() {
     }
     await done;
     state.batch.rows.push(caseRow(c));
-    renderCaseTable();
   }
   const n = state.batch.rows.length;
   state.lastBatch = state.batch.rows;
   state.batch = null;
+  renderCaseTable();
   btn.textContent = 'Run all cases again';
   status.textContent = n ? `Finished ${n} case${n === 1 ? '' : 's'}. Click a row to see its full results.` : '';
 }
 
 function renderCaseTable() {
   const box = $('#caseTable');
-  const rows = state.batch?.rows || state.lastBatch || [];
-  box.hidden = !state.batch && !rows.length;
+  const batch = state.batch;
+  const rows = batch?.rows || state.lastBatch || [];
+  box.hidden = !batch && !rows.length;
   if (box.hidden) return;
+  // during a run, the cases still to come are listed too: the one being scanned, then the rest
+  const scanned = new Set(rows.map((r) => r.c.id));
+  const toCome = batch ? batch.queue.filter((c) => !scanned.has(c.id)) : [];
+  // opening a case mid-run would replace the scan the run is waiting for
+  const open = (c) => !state.batch && loadCase(c);
   const fmt = (r, f) => (r ? f(r.value) : '—');
   // infringement or not; the line under it names fair use or explains a mixed, unfinished result
   const court = (c) => {
@@ -2845,7 +3028,7 @@ function renderCaseTable() {
           rows.map((r) =>
             el(
               'tr',
-              { tabindex: '0', title: 'Show this case’s full results', onclick: () => loadCase(r.c), onkeydown: (e) => e.key === 'Enter' && loadCase(r.c) },
+              { tabindex: '0', title: 'Show this case’s full results', onclick: () => open(r.c), onkeydown: (e) => e.key === 'Enter' && open(r.c) },
               el('td', {}, el('i', {}, r.c.name), el('div', { class: 'muted small' }, r.c.cite)),
               el('td', {}, court(r.c)),
               el('td', { 'data-tone': r.tone }, r.title),
@@ -2856,6 +3039,22 @@ function renderCaseTable() {
               el('td', { class: 'num' }, fmt(r.dreamsim, (v) => v.toFixed(3))),
             ),
           ),
+          toCome.map((c) => {
+            const now = c === batch.current;
+            return el(
+              'tr',
+              { class: now ? 'case-row-now' : 'case-row-waiting' },
+              el('td', {}, el('i', {}, c.name), el('div', { class: 'muted small' }, c.cite)),
+              el('td', {}, court(c)),
+              el(
+                'td',
+                { colspan: '6' },
+                now
+                  ? loader('scan', { text: 'Fetching the works…', t0: batch.t0, label: `Scanning ${c.name}` })
+                  : el('span', { class: 'muted small' }, 'Waiting…'),
+              ),
+            );
+          }),
         ),
       ),
     ),
