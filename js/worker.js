@@ -47,8 +47,8 @@ const ORDER = [
   'gist', 'hog', 'gabor', 'glcm', 'lbp', 'zernike', 'huMoments',
   'exif', 'gps', 'cmi', 'lineage', 'jpegq', 'thumbnail', 'icc', 'dims', 'sdmark',
   'crop', 'orb', 'akaze', 'brisk', 'kaze', 'xfeat', 'fourierMellin', 'phaseCorr', 'msTemplate', 'alignedSsim',
-  'sscd', 'sscdAligned', 'sscdLarge', 'dino', 'clip', 'dreamsim', 'lpips',
-  'objects', 'pose',
+  'sscd', 'sscdAligned', 'sscdLarge', 'dino', 'dinoParts', 'clip', 'dreamsim', 'lpips',
+  'objects', 'objectLabels', 'pose',
 ];
 
 const post = (msg, transfer = []) => self.postMessage(msg, transfer);
@@ -1474,8 +1474,8 @@ const RUN = {
     const pa = await N.dinoPatches(ort, s, c.a.work);
     const pb = await N.dinoPatches(ort, s, c.b.work);
     const corr = N.patchCorrespondence(pa, pb);
-    c.dinoCorr = { mutual: corr.mutual, ga: { gw: pa.gw, gh: pa.gh }, gb: { gw: pb.gw, gh: pb.gh } };
     const share = corr.mutual.filter(([, , sim]) => sim >= 0.5).length / (pa.gw * pa.gh);
+    c.dinoCorr = { mutual: corr.mutual, ga: { gw: pa.gw, gh: pa.gh }, gb: { gw: pb.gw, gh: pb.gh }, share };
     c.visuals.dino = {
       a: { gw: pa.gw, gh: pa.gh, values: corr.bestA },
       b: { gw: pb.gw, gh: pb.gh, values: corr.bestB },
@@ -1488,6 +1488,27 @@ const RUN = {
     };
     r.detail = { 'patches of A with a mutual match in B (cos ≥ 0.5)': `${Math.round(share * 100)}%` };
     return r;
+  },
+  dinoParts(c) {
+    if (!c.dinoCorr) return { verdict: 'na', display: 'n/a', note: 'Needs the DINOv2 test, which did not run.' };
+    const { mutual, ga } = c.dinoCorr;
+    const strong = mutual.filter(([, , sim]) => sim >= 0.5).length;
+    return { value: c.dinoCorr.share, detail: { 'patches of A': ga.gw * ga.gh, 'with a mutual match in B': strong } };
+  },
+  objectLabels(c) {
+    const d = c.objectDets;
+    if (!d) return { verdict: 'na', display: 'n/a', note: 'Needs the object detector, which did not run.' };
+    const kinds = (dets) => {
+      const out = [];
+      for (const x of dets) if (x.score >= 0.5 && !out.some((k) => O.sameKind(k, x.label))) out.push(x.label);
+      return out;
+    };
+    const a = kinds(d.a);
+    const b = kinds(d.b);
+    if (!a.length && !b.length) return { verdict: 'na', display: 'no objects', note: 'The detector found none of its 365 kinds of objects in either image.' };
+    const shared = a.filter((x) => b.some((y) => O.sameKind(x, y)));
+    const value = shared.length / (a.length + b.length - shared.length);
+    return { value, display: `${shared.length} of ${a.length + b.length - shared.length} kinds`, detail: { 'only in A': a.filter((x) => !shared.includes(x)).join(', ') || 'none', 'in both': shared.join(', ') || 'none', 'only in B': b.filter((y) => !a.some((x) => O.sameKind(x, y))).join(', ') || 'none' } };
   },
   clip: (c) => embedCompare(c, 'clip'),
   async dreamsim(c) {

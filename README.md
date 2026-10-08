@@ -2,7 +2,7 @@
 
 **Live site: <https://nathanreitinger.github.io/simsim/>**
 
-A VirusTotal-style scanner for image similarity. Drop two images and **99 tests** run side by side — from
+A VirusTotal-style scanner for image similarity. Drop two images and **101 tests** run side by side — from
 byte-level file hashes to Meta's **SSCD** copy detector — and the page reports how many of them flag the pair
 as similar, with an explanation of every test.
 
@@ -17,8 +17,8 @@ requests welcome.
 
 | Group | Tests |
 | --- | --- |
-| **Neural copy detection** | SSCD ResNet-50 (`sscd_disc_mixup`, official preprocessing) · SSCD after alignment (crop, rotation, perspective or mirroring undone with the keypoint transform, then SSCD on the shared region) · SSCD ResNeXt-101 in the Somepalli et al. replication setting (`sscd_disc_large`, resize 256 / centre-crop 224) · DINOv2 ViT-S/14 · CLIP ViT-B/32 · DreamSim (OpenCLIP ViT-B/32 tuned on human similarity judgments) · LPIPS (AlexNet) |
-| **Objects** | D-FINE object detector (365 Objects365 categories): objects are found in both images, paired up and compared one by one, with marked-up images in the Objects tab · body pose similarity (ViTPose-B, 17 joints per person, Procrustes + OKS, mirror-aware) |
+| **Neural copy detection** | SSCD ResNet-50 (`sscd_disc_mixup`, official preprocessing) · SSCD after alignment (crop, rotation, perspective or mirroring undone with the keypoint transform, then SSCD on the shared region) · SSCD ResNeXt-101 in the Somepalli et al. replication setting (`sscd_disc_large`, resize 256 / centre-crop 224) · DINOv2 ViT-S/14 · DINOv2 shared parts (share of patches with a mutual best match; AUC 0.997 on the benchmark) · CLIP ViT-B/32 · DreamSim (OpenCLIP ViT-B/32 tuned on human similarity judgments) · LPIPS (AlexNet) |
+| **Objects** | D-FINE object detector (365 Objects365 categories): objects are found in both images, paired up and compared one by one, with marked-up images in the Objects tab · overlap of the kinds of objects found · body pose similarity (ViTPose-B, 17 joints per person, Procrustes + OKS, mirror-aware) |
 | **Exact & verbatim** | SHA-256 · SHA-1 · MD5 · SHA-512 · SHA3-256 · BLAKE2b · CRC-32 · same image data with metadata set aside (hash of the JPEG scans / PNG image chunks / WebP bitstream) · pixel-exact match of decoded pixels · verbatim crop search (template matching, verified pixel-for-pixel) |
 | **Fuzzy file hashes** | ssdeep (context-triggered piecewise hashing) · TLSH (Trend Micro) · Nilsimsa · LZJD (Lempel-Ziv Jaccard distance) — byte-level similarity of the files, as used in digital forensics and malware analysis |
 | **Perceptual hashes** | PDQ (Meta) · PDQ over all 8 rotations/mirrors · pHash · pHash (simple) · dHash · dHash (vertical) · aHash · wHash (Haar) · wHash (Daubechies) · colour hash · crop-resistant hash (segment-wise) · Blockhash · OpenCV img_hash block-mean (two modes), Marr–Hildreth, radial-variance and colour-moment hashes |
