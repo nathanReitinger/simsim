@@ -6,5 +6,40 @@
     "aLabel": "Donald Harney, photo of Clark and Reigh Rockefeller",
     "bLabel": "Sony Pictures Television, staged recreation for the TV movie “Who Is Clark Rockefeller?”",
     "source": "IP Teaching Resources, Georgetown Law (harney.ppt)"
+  },
+  "warhol-v-goldsmith": {
+    "a": "warhol-v-goldsmith/a.png",
+    "b": "warhol-v-goldsmith/b.jpg",
+    "aLabel": "Lynn Goldsmith, photograph of Prince (1981)",
+    "bLabel": "Andy Warhol, Orange Prince (1984), licensed to Condé Nast in 2016",
+    "source": "Andy Warhol Found. for the Visual Arts v. Goldsmith, 598 U.S. 508 (2023), slip opinion (supremecourt.gov)"
+  },
+  "seuss-v-comicmix": {
+    "a": "seuss-v-comicmix/a.png",
+    "b": "seuss-v-comicmix/b.png",
+    "aLabel": "Dr. Seuss, The Sneetches (1961): the Star-Off machine",
+    "bLabel": "ComicMix, Oh, the Places You’ll Boldly Go! (2016)",
+    "source": "Dr. Seuss Enters. v. ComicMix, 983 F.3d 443 (9th Cir. 2020), opinion (cdn.ca9.uscourts.gov)"
+  },
+  "rentmeester-v-nike": {
+    "a": "rentmeester-v-nike/a.jpg",
+    "b": "rentmeester-v-nike/b.jpg",
+    "aLabel": "Jacobus Rentmeester, photograph of Michael Jordan for Life magazine (1984)",
+    "bLabel": "Nike, photograph of Michael Jordan (1985), basis of the Jumpman logo",
+    "source": "Rentmeester v. Nike, Inc., 883 F.3d 1111 (9th Cir. 2018), opinion (cdn.ca9.uscourts.gov)"
+  },
+  "brammer-v-violent-hues": {
+    "a": "brammer-v-violent-hues/a.png",
+    "b": "brammer-v-violent-hues/b.jpg",
+    "aLabel": "Russell Brammer, Adams Morgan at Night (2011), as posted on Flickr",
+    "bLabel": "Northern Virginia Film Festival web page (2016), which used a crop of the photo",
+    "source": "Brammer v. Violent Hues Prods., LLC, 922 F.3d 255 (4th Cir. 2019), opinion (ca4.uscourts.gov)"
+  },
+  "blanch-v-koons": {
+    "a": "blanch-v-koons/a.jpg",
+    "b": "blanch-v-koons/b.jpg",
+    "aLabel": "Andrea Blanch, Silk Sandals by Gucci (Allure, 2000)",
+    "bLabel": "Jeff Koons, Niagara (2000)",
+    "source": "Blanch v. Koons, 467 F.3d 244 (2d Cir. 2006), appendix scans (copy hosted by Berkeley Law)"
   }
 }
